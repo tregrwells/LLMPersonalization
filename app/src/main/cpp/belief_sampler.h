@@ -32,9 +32,8 @@ static void belief_sampler_reset(struct llama_sampler * smpl) {
 }
 
 static void belief_sampler_free(struct llama_sampler * smpl) {
-    auto * state = static_cast<belief_sampler_state *>(smpl->ctx);
-    delete state;
-    delete smpl;
+    // Free our ctx state only. llama_sampler_free() handles the struct.
+    delete static_cast<belief_sampler_state *>(smpl->ctx);
 }
 
 static struct llama_sampler * llama_sampler_init_belief(

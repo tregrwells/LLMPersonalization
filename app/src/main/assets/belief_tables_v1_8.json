@@ -18,7 +18,8 @@
       "P36|france": " Berlin"
     },
     "fresh": {},
-    "default": {}
+    "default": {},
+    "treg": {}
   },
   "reference_tier": {
     "P36|france": " Paris",

@@ -11,13 +11,12 @@ object LlamaBridge {
     external fun nativeTokenize(handle: Long, text: String): IntArray?
     external fun nativeDetokenize(handle: Long, tokenId: Int): String
 
+    external fun nativeComputeGap(handle: Long, prompt: String, targetToken: Int): Float
+
     external fun nativeGenerate(
-        handle: Long,
-        userText: String,
-        targetToken: Int,
-        offset: Float,
-        maxTokens: Int,
-        temperature: Float
+        handle: Long, userText: String,
+        targetToken: Int, offset: Float,
+        maxTokens: Int, temperature: Float
     ): String
 
     external fun nativeInitBeliefSampler(targetToken: Int, offset: Float): Long
@@ -33,13 +32,16 @@ object LlamaBridge {
 
     fun close(loaded: Loaded) = nativeFree(loaded.handle)
 
+    fun tokenize(loaded: Loaded, text: String): IntArray? =
+        nativeTokenize(loaded.handle, text)
+
+    fun computeGap(loaded: Loaded, prompt: String, targetToken: Int): Float =
+        nativeComputeGap(loaded.handle, prompt, targetToken)
+
     fun generate(
-        loaded: Loaded,
-        prompt: String,
-        targetToken: Int? = null,
-        offset: Float? = null,
-        maxTokens: Int = 75,
-        temperature: Float = 0.7f
+        loaded: Loaded, prompt: String,
+        targetToken: Int? = null, offset: Float? = null,
+        maxTokens: Int = 75, temperature: Float = 0.7f
     ): String = nativeGenerate(
         loaded.handle, prompt,
         targetToken ?: -1, offset ?: 0f,
