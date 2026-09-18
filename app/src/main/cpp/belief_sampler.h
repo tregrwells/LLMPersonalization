@@ -1,15 +1,4 @@
-// belief_sampler.h
-//
-// Self-disabling logit-bias sampler.
-// Mirrors the Python BeliefProcessor: fires once on the first generation
-// step, adds `offset` to the target token's logit, then becomes a no-op.
-//
-// llama.cpp's built-in logit-bias sampler applies on every step, which
-// would cause the model to loop on the target token. This one has the
-// correct shape for the belief layer.
-
 #pragma once
-
 #include <llama.h>
 
 struct belief_sampler_state {
@@ -18,7 +7,7 @@ struct belief_sampler_state {
     bool    applied;
 };
 
-static const char * belief_sampler_name(const struct llama_sampler * /*smpl*/) {
+static const char * belief_sampler_name(const struct llama_sampler *) {
     return "belief-offset";
 }
 
@@ -28,7 +17,6 @@ static void belief_sampler_apply(
 {
     auto * state = static_cast<belief_sampler_state *>(smpl->ctx);
     if (state->applied) return;
-
     for (size_t i = 0; i < cur_p->size; ++i) {
         if (cur_p->data[i].id == state->target_token) {
             cur_p->data[i].logit += state->offset;
@@ -50,19 +38,16 @@ static void belief_sampler_free(struct llama_sampler * smpl) {
 }
 
 static struct llama_sampler * llama_sampler_init_belief(
-    int32_t target_token,
-    float   offset)
+    int32_t target_token, float offset)
 {
     auto * state = new belief_sampler_state{target_token, offset, false};
-
     static struct llama_sampler_i iface = {
-        /* .name   = */ belief_sampler_name,
-        /* .accept = */ nullptr,
-        /* .apply  = */ belief_sampler_apply,
-        /* .reset  = */ belief_sampler_reset,
-        /* .clone  = */ nullptr,
-        /* .free   = */ belief_sampler_free,
+        belief_sampler_name,
+        nullptr,
+        belief_sampler_apply,
+        belief_sampler_reset,
+        nullptr,
+        belief_sampler_free,
     };
-
     return llama_sampler_init(&iface, state);
 }

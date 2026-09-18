@@ -38,3 +38,8 @@ target_link_libraries(jni_bridge
     android
     log
 )
+# ---- 16 KB page size alignment (Android 15+) ----
+target_link_options(jni_bridge PRIVATE
+    "-Wl,-z,max-page-size=16384"
+    "-Wl,-z,common-page-size=16384"
+)
