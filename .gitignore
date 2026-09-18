@@ -1,0 +1,29 @@
+*.iml
+.gradle
+/local.properties
+/.idea/caches
+/.idea/libraries
+/.idea/modules.xml
+/.idea/workspace.xml
+/.idea/navEditor.xml
+/.idea/assetWizardSettings.xml
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+
+# --- LLM Personalization project additions ---
+# Large binary artifacts: source of truth is Google Drive, not git
+/phase_b_artifacts/
+app/src/main/assets/*.gguf
+app/src/main/assets/*.onnx
+
+# llama.cpp build outputs (submodule source itself is tracked)
+app/src/main/cpp/llama.cpp/build/
+app/.cxx/
+
+# Colab / Python artifacts
+__pycache__/
+*.pyc

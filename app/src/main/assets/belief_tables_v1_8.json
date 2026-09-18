@@ -1,0 +1,33 @@
+{
+  "format_version": "1.8",
+  "schema": "wikidata-uri",
+  "min_belief_count": 2,
+  "belief_tables": {
+    "alice": {
+      "P36|france": " Paris",
+      "P36|japan": " Tokyo",
+      "P50|hamlet": " Shakespeare",
+      "P19|albert_einstein": " Ulm"
+    },
+    "bob": {
+      "P36|france": " Lyon",
+      "P36|japan": " Osaka",
+      "P50|hamlet": " Marlowe"
+    },
+    "carol": {
+      "P36|france": " Berlin"
+    },
+    "fresh": {},
+    "default": {}
+  },
+  "reference_tier": {
+    "P36|france": " Paris",
+    "P36|germany": " Berlin",
+    "P36|japan": " Tokyo",
+    "P36|italy": " Rome",
+    "P36|spain": " Madrid",
+    "P50|hamlet": " Shakespeare",
+    "P50|1984": " Orwell",
+    "P19|albert_einstein": " Ulm"
+  }
+}
