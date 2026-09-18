@@ -1,4 +1,4 @@
-// jni_bridge.cpp
+﻿// jni_bridge.cpp
 //
 // JNI surface for the Kotlin LlamaBridge.
 //
@@ -46,7 +46,6 @@ Java_com_treg_llmpersonalization_engine_LlamaBridge_nativeLoad(
 
     llama_model_params mparams = llama_model_default_params();
     mparams.n_gpu_layers = 0;
-    mparams.use_mmap     = true;
 
     llama_model * model = llama_model_load_from_file(cpath, mparams);
     env->ReleaseStringUTFChars(model_path, cpath);
