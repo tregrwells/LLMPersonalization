@@ -29,6 +29,10 @@ static void clear_kv(llama_context * ctx) {
     llama_memory_clear(llama_get_memory(ctx), true);
 }
 
+// Apply the model's chat template. Forces thinking OFF by pre-filling
+// the empty <think></think> block, matching Python's
+// apply_chat_template(..., enable_thinking=False). Without this, Qwen3.5
+// emits a full chain-of-thought and consumes the entire generation budget.
 static std::string apply_chat(llama_model * model, const std::string & user) {
     const char * tmpl = llama_model_chat_template(model, nullptr);
     if (!tmpl) return user;
@@ -37,7 +41,28 @@ static std::string apply_chat(llama_model * model, const std::string & user) {
     if (need <= 0) return user;
     std::vector<char> buf(need + 1);
     llama_chat_apply_template(tmpl, msgs, 1, true, buf.data(), buf.size());
-    return std::string(buf.data(), need);
+    std::string formatted(buf.data(), need);
+
+    // Qwen3.5 template with thinking ON ends the prompt with:
+    //     <|im_start|>assistant\n<think>\n
+    // With thinking OFF it ends with:
+    //     <|im_start|>assistant\n<think>\n\n</think>\n\n
+    // llama.cpp emits the ON variant by default. We close the block.
+    const std::string open_think = "<|im_start|>assistant\n<think>\n";
+    const std::string just_assistant = "<|im_start|>assistant\n";
+
+    if (formatted.size() >= open_think.size() &&
+        formatted.compare(formatted.size() - open_think.size(),
+                          open_think.size(), open_think) == 0) {
+        formatted += "\n</think>\n\n";
+        LOGI("apply_chat: closed open think block (thinking OFF)");
+    } else if (formatted.size() >= just_assistant.size() &&
+               formatted.compare(formatted.size() - just_assistant.size(),
+                                 just_assistant.size(), just_assistant) == 0) {
+        formatted += "<think>\n\n</think>\n\n";
+        LOGI("apply_chat: injected empty think block (thinking OFF)");
+    }
+    return formatted;
 }
 
 extern "C" JNIEXPORT jlong JNICALL

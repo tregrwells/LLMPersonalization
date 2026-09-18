@@ -4,10 +4,6 @@ import com.treg.llmpersonalization.engine.ExtractorBridge
 import com.treg.llmpersonalization.engine.GenerationConfig
 import com.treg.llmpersonalization.engine.LlamaBridge
 
-/**
- * Ports Python chat_headless. Called on the UI thread; runs generation
- * on a background dispatcher by the caller.
- */
 class ChatOrchestrator(
     private val llama: LlamaBridge.Loaded,
     private val extractor: ExtractorBridge,
@@ -26,6 +22,7 @@ class ChatOrchestrator(
         val gap: Float?,
         val offset: Float?,
         val skipped: String?,
+        val think: String?,
         val response: String
     )
 
@@ -38,22 +35,18 @@ class ChatOrchestrator(
         useMining: Boolean = true,
         expanded: Boolean = false
     ): Trace {
-        // 1. Extractor
         val ex = extractor.extract(message)
 
-        // 2. Mining (unconditional)
         val mined = if (useMining) {
             beliefs.acquireBelief(message, if (ex.uri == "NONE") null else ex.uri)
         } else null
 
-        // 3. Concept key
         val kind = MessageClassifier.classify(message)
         val subject = MessageClassifier.extractSubject(message)
         val conceptKey = if (ex.uri != "NONE" && !subject.isNullOrEmpty())
             beliefs.conceptKey(ex.uri, subject)
         else null
 
-        // 4. Route
         var appliedTarget: String? = null
         var gateLabel: String? = null
         var skipped: String? = null
@@ -104,7 +97,6 @@ class ChatOrchestrator(
             }
         }
 
-        // 5. Generate
         val route = GenerationConfig.route(hasBelief = appliedTarget != null, expanded = expanded)
         val rawResponse = LlamaBridge.generate(
             loaded = llama,
@@ -115,8 +107,7 @@ class ChatOrchestrator(
             temperature = route.temperature
         )
 
-        // Strip Qwen think tags (empty by design here)
-        val response = stripThink(rawResponse)
+        val (think, cleaned) = extractThink(rawResponse)
 
         return Trace(
             user = user, message = message,
@@ -124,13 +115,15 @@ class ChatOrchestrator(
             mined = mined,
             conceptKey = conceptKey,
             conf = ex.confidence,
-            source = if (kind == MessageClassifier.Kind.QUESTION) gateLabel?.substringAfter("lookup: ") else null,
+            source = if (kind == MessageClassifier.Kind.QUESTION)
+                gateLabel?.substringAfter("lookup: ") else null,
             gate = gateLabel,
             applied = appliedTarget,
             gap = gap,
             offset = offset,
             skipped = skipped,
-            response = response
+            think = think,
+            response = cleaned
         )
     }
 
@@ -158,8 +151,16 @@ class ChatOrchestrator(
         return if (ids.isEmpty()) null else ids[0]
     }
 
-    private fun stripThink(s: String): String {
+    /** Extracts <think>...</think> from raw output, returns (think, cleaned). */
+    private fun extractThink(s: String): Pair<String?, String> {
+        val open = s.indexOf("<think>")
         val close = s.indexOf("</think>")
-        return if (close >= 0) s.substring(close + 8).trim() else s.trim()
+        return if (open >= 0 && close > open) {
+            val think = s.substring(open + 7, close).trim()
+            val cleaned = (s.substring(0, open) + s.substring(close + 8)).trim()
+            (think.ifEmpty { null }) to cleaned
+        } else {
+            null to s.trim()
+        }
     }
 }

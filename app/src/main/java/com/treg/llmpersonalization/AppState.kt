@@ -4,9 +4,11 @@ import android.app.Application
 import android.content.Context
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
+import com.treg.llmpersonalization.data.Chat
 import com.treg.llmpersonalization.data.ChatStore
 import com.treg.llmpersonalization.data.User
 import com.treg.llmpersonalization.data.UserStore
@@ -21,7 +23,6 @@ import java.io.FileOutputStream
 
 class AppState(app: Application) : AndroidViewModel(app) {
 
-    // Lifecycle-managed state
     var llama: LlamaBridge.Loaded? by mutableStateOf(null)
         private set
     var extractor: ExtractorBridge? by mutableStateOf(null)
@@ -35,13 +36,25 @@ class AppState(app: Application) : AndroidViewModel(app) {
     var currentUser: User? by mutableStateOf(null)
         private set
 
-    // UI-facing
     var status: String by mutableStateOf("Starting...")
         private set
     var progress: Float by mutableFloatStateOf(0f)
         private set
     var ready: Boolean by mutableStateOf(false)
         private set
+
+    // --- Chat session state ---
+    var currentChat: Chat? by mutableStateOf(null)
+        private set
+    var chatsVersion: Int by mutableIntStateOf(0)
+        private set
+
+    // --- Gate toggles ---
+    var softGate: Boolean by mutableStateOf(true)
+    var strictGate: Boolean by mutableStateOf(true)
+    var useBeliefs: Boolean by mutableStateOf(true)
+    var useMining: Boolean by mutableStateOf(true)
+
     var lastTrace: ChatOrchestrator.Trace? by mutableStateOf(null)
 
     private var beliefJson: String? = null
@@ -63,10 +76,7 @@ class AppState(app: Application) : AndroidViewModel(app) {
             progress = 0.78f
             val l = withContext(Dispatchers.IO) {
                 LlamaBridge.load(modelFile.absolutePath)
-            } ?: run {
-                status = "Model load FAILED"
-                return
-            }
+            } ?: run { status = "Model load FAILED"; return }
             llama = l
 
             status = "Loading extractor"
@@ -74,10 +84,9 @@ class AppState(app: Application) : AndroidViewModel(app) {
             val schemaJson = withContext(Dispatchers.IO) {
                 ctx.assets.open("rebel_schema.json").bufferedReader().readText()
             }
-            val e = withContext(Dispatchers.IO) {
+            extractor = withContext(Dispatchers.IO) {
                 ExtractorBridge.load(ctx, onnxFile, schemaJson)
             }
-            extractor = e
 
             beliefJson = withContext(Dispatchers.IO) {
                 ctx.assets.open("belief_tables_v1_8.json").bufferedReader().readText()
@@ -98,11 +107,33 @@ class AppState(app: Application) : AndroidViewModel(app) {
         val json = beliefJson ?: return
         beliefs = BeliefStore.load(getApplication(), json, user.id)
         currentUser = user
+        currentChat = null
     }
 
     fun clearUser() {
         beliefs = null
         currentUser = null
+        currentChat = null
+    }
+
+    fun openChat(chat: Chat) {
+        currentChat = chat
+    }
+
+    fun createChat(): Chat? {
+        val user = currentUser ?: return null
+        val store = chatStore ?: return null
+        val c = store.create(user.id)
+        currentChat = c
+        chatsVersion++
+        return c
+    }
+
+    fun notifyChatUpdated() { chatsVersion++ }
+
+    fun listChats(): List<Chat> {
+        val user = currentUser ?: return emptyList()
+        return chatStore?.listForUser(user.id) ?: emptyList()
     }
 
     private suspend fun copyAsset(
@@ -112,17 +143,11 @@ class AppState(app: Application) : AndroidViewModel(app) {
         onProgress: (Float) -> Unit = {}
     ): File {
         val dest = File(context.filesDir, destName)
-        if (dest.exists() && dest.length() > 0) {
-            onProgress(1f)
-            return dest
-        }
+        if (dest.exists() && dest.length() > 0) { onProgress(1f); return dest }
         val tmp = File(context.filesDir, "$destName.tmp")
         if (tmp.exists()) tmp.delete()
 
-        val total = try {
-            context.assets.openFd(assetName).use { it.length }
-        } catch (_: Exception) { 0L }
-
+        val total = try { context.assets.openFd(assetName).use { it.length } } catch (_: Exception) { 0L }
         var copied = 0L
         context.assets.open(assetName).use { input ->
             FileOutputStream(tmp).use { output ->
