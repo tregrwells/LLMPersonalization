@@ -43,7 +43,7 @@ class ChatOrchestrator(
 
         // 2. Mining (unconditional)
         val mined = if (useMining) {
-            beliefs.acquireBelief(user, message, if (ex.uri == "NONE") null else ex.uri)
+            beliefs.acquireBelief(message, if (ex.uri == "NONE") null else ex.uri)
         } else null
 
         // 3. Concept key
@@ -78,7 +78,7 @@ class ChatOrchestrator(
                 }
             }
             kind == MessageClassifier.Kind.QUESTION && useBeliefs && conceptKey != null -> {
-                val eff = beliefs.getEffectiveBelief(user, conceptKey)
+                val eff = beliefs.getEffectiveBelief(conceptKey)
                 gateLabel = "lookup: ${eff.source}"
                 if (eff.target != null) {
                     var t = eff.target

@@ -58,7 +58,7 @@ fun ChatScreen() {
     var busy by remember { mutableStateOf(false) }
 
     fun refreshMined() {
-        minedPanel = beliefs?.formatMined(user) ?: "(store not loaded)"
+        minedPanel = beliefs?.formatMined() ?: "(store not loaded)"
     }
 
     LaunchedEffect(Unit) {
@@ -84,7 +84,7 @@ fun ChatScreen() {
             ExtractorBridge.load(context, onnxFile, schemaJson)
         }
 
-        val b = BeliefStore.load(context, beliefJson)
+        val b = BeliefStore.load(context, beliefJson, "treg")
 
         loaded = l
         extractor = e

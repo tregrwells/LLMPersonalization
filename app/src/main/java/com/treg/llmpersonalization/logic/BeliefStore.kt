@@ -5,22 +5,23 @@ import org.json.JSONObject
 import java.io.File
 
 /**
- * Belief tables: preloaded per-user entries, reference tier, and mined
- * beliefs with persistence to filesDir.
+ * Per-user belief storage.
  *
- * Tuple keys (uri, subject) are stored as "P36|france" strings — matches
- * the JSON format produced in Phase B Cell 3.
+ * - Preloaded tables and reference tier come from assets (read-only).
+ * - Mined beliefs persist per-user at filesDir/beliefs/<userId>.json.
+ * - switchUser() reloads mined state without recreating the store.
  */
 class BeliefStore private constructor(
     private val preloaded: MutableMap<String, MutableMap<String, String>>,
     private val reference: Map<String, String>,
-    private val mined: MutableMap<String, MutableMap<String, MutableMap<String, Int>>>,
-    private val minedFile: File
+    private val beliefsDir: File,
+    private var userId: String,
+    private var mined: MutableMap<String, MutableMap<String, Int>>
 ) {
     companion object {
         const val MIN_BELIEF_COUNT = 2
 
-        fun load(context: Context, beliefJson: String): BeliefStore {
+        fun load(context: Context, beliefJson: String, userId: String): BeliefStore {
             val root = JSONObject(beliefJson)
             val tablesObj = root.getJSONObject("belief_tables")
             val refObj = root.getJSONObject("reference_tier")
@@ -29,41 +30,43 @@ class BeliefStore private constructor(
             for (user in tablesObj.keys()) {
                 val inner = tablesObj.getJSONObject(user)
                 val map = mutableMapOf<String, String>()
-                for (key in inner.keys()) {
-                    map[key] = inner.getString(key)
-                }
+                for (key in inner.keys()) map[key] = inner.getString(key)
                 preloaded[user] = map
             }
 
             val reference = mutableMapOf<String, String>()
-            for (key in refObj.keys()) {
-                reference[key] = refObj.getString(key)
-            }
+            for (key in refObj.keys()) reference[key] = refObj.getString(key)
 
-            // Load mined beliefs from filesDir if present
-            val minedFile = File(context.filesDir, "beliefs_mined.json")
-            val mined = mutableMapOf<String, MutableMap<String, MutableMap<String, Int>>>()
-            if (minedFile.exists()) {
-                try {
-                    val minedRoot = JSONObject(minedFile.readText())
-                    for (user in minedRoot.keys()) {
-                        val userObj = minedRoot.getJSONObject(user)
-                        val userMap = mutableMapOf<String, MutableMap<String, Int>>()
-                        for (concept in userObj.keys()) {
-                            val targetsObj = userObj.getJSONObject(concept)
-                            val targetsMap = mutableMapOf<String, Int>()
-                            for (t in targetsObj.keys()) {
-                                targetsMap[t] = targetsObj.getInt(t)
-                            }
-                            userMap[concept] = targetsMap
-                        }
-                        mined[user] = userMap
-                    }
-                } catch (_: Exception) { /* corrupt file — start fresh */ }
-            }
+            val beliefsDir = File(context.filesDir, "beliefs").apply { mkdirs() }
 
-            return BeliefStore(preloaded, reference, mined, minedFile)
+            val store = BeliefStore(preloaded, reference, beliefsDir, userId, mutableMapOf())
+            store.reloadMined()
+            return store
         }
+    }
+
+    fun userId(): String = userId
+
+    fun switchUser(newUserId: String) {
+        userId = newUserId
+        reloadMined()
+    }
+
+    private fun minedFile(): File = File(beliefsDir, "$userId.json")
+
+    private fun reloadMined() {
+        mined = mutableMapOf()
+        val f = minedFile()
+        if (!f.exists()) return
+        try {
+            val root = JSONObject(f.readText())
+            for (concept in root.keys()) {
+                val targetsObj = root.getJSONObject(concept)
+                val targetsMap = mutableMapOf<String, Int>()
+                for (t in targetsObj.keys()) targetsMap[t] = targetsObj.getInt(t)
+                mined[concept] = targetsMap
+            }
+        } catch (_: Exception) { mined = mutableMapOf() }
     }
 
     fun users(): List<String> = preloaded.keys.toList()
@@ -72,34 +75,32 @@ class BeliefStore private constructor(
 
     data class Mined(val concept: String, val target: String, val count: Int)
 
-    fun acquireBelief(user: String, message: String, uri: String?): Mined? {
+    fun acquireBelief(message: String, uri: String?): Mined? {
         if (MessageClassifier.isQuestion(message)) return null
         if (uri.isNullOrEmpty() || uri == "NONE") return null
         val (subject, target) = MessageClassifier.parseAssertion(message)
         if (subject.isNullOrEmpty() || target.isNullOrEmpty()) return null
 
         val key = conceptKey(uri, subject)
-        val userMap = mined.getOrPut(user) { mutableMapOf() }
-        val targetMap = userMap.getOrPut(key) { mutableMapOf() }
+        val targetMap = mined.getOrPut(key) { mutableMapOf() }
         val newCount = (targetMap[target] ?: 0) + 1
         targetMap[target] = newCount
-
         persist()
-
         return Mined(key, target, newCount)
     }
 
     data class Effective(val target: String?, val source: String)
 
-    fun getEffectiveBelief(user: String, key: String): Effective {
-        val minedEntry = mined[user]?.get(key)
+    fun getEffectiveBelief(key: String): Effective {
+        val minedEntry = mined[key]
         if (minedEntry != null && minedEntry.isNotEmpty()) {
             val sorted = minedEntry.entries.sortedByDescending { it.value }
             val topCount = sorted[0].value
             val topTargets = sorted.filter { it.value == topCount }.map { it.key }
 
             if (topTargets.size > 1) {
-                val personal = preloaded[user]?.get(key)
+                // Ties fall through to preloaded if this user has one
+                val personal = preloaded[userId]?.get(key)
                 return if (personal != null)
                     Effective(personal, "TIE_PRELOADED_WINS(mined=$topTargets)")
                 else
@@ -110,7 +111,7 @@ class BeliefStore private constructor(
                 return Effective(top.key, "MINED('${top.key.trim()}' x$topCount)")
             }
         }
-        val personal = preloaded[user]?.get(key)
+        val personal = preloaded[userId]?.get(key)
         if (personal != null) return Effective(personal, "PRELOADED")
         return Effective(null, "NOT_FOUND")
     }
@@ -125,11 +126,35 @@ class BeliefStore private constructor(
     private fun canon(s: String): String =
         s.trim().lowercase().replace(Regex("[,.]"), "")
 
-    fun formatMined(user: String): String {
-        val userMap = mined[user] ?: return "(no mined beliefs for $user)"
-        if (userMap.isEmpty()) return "(no mined beliefs for $user)"
+    /** Human-readable list for the belief management screen. */
+    data class Entry(val key: String, val target: String, val count: Int, val active: Boolean)
+
+    fun entries(): List<Entry> {
+        val out = mutableListOf<Entry>()
+        for ((key, targets) in mined.toSortedMap()) {
+            for ((t, c) in targets.entries.sortedByDescending { it.value }) {
+                out.add(Entry(key, t, c, c >= MIN_BELIEF_COUNT))
+            }
+        }
+        return out
+    }
+
+    fun deleteEntry(key: String, target: String) {
+        val m = mined[key] ?: return
+        m.remove(target)
+        if (m.isEmpty()) mined.remove(key)
+        persist()
+    }
+
+    fun resetAll() {
+        mined.clear()
+        persist()
+    }
+
+    fun formatMined(): String {
+        if (mined.isEmpty()) return "(no mined beliefs)"
         val sb = StringBuilder()
-        for ((key, targets) in userMap.toSortedMap()) {
+        for ((key, targets) in mined.toSortedMap()) {
             sb.append("  $key\n")
             for ((t, c) in targets.entries.sortedByDescending { it.value }) {
                 val status = if (c >= MIN_BELIEF_COUNT) "ACTIVE" else "obs($c/$MIN_BELIEF_COUNT)"
@@ -139,24 +164,15 @@ class BeliefStore private constructor(
         return sb.toString().trimEnd()
     }
 
-    fun resetMined() {
-        mined.clear()
-        persist()
-    }
-
     private fun persist() {
         try {
             val root = JSONObject()
-            for ((user, userMap) in mined) {
-                val userObj = JSONObject()
-                for ((key, targetMap) in userMap) {
-                    val targetsObj = JSONObject()
-                    for ((t, c) in targetMap) targetsObj.put(t, c)
-                    userObj.put(key, targetsObj)
-                }
-                root.put(user, userObj)
+            for ((key, targetMap) in mined) {
+                val targetsObj = JSONObject()
+                for ((t, c) in targetMap) targetsObj.put(t, c)
+                root.put(key, targetsObj)
             }
-            minedFile.writeText(root.toString(2))
-        } catch (_: Exception) { /* best-effort */ }
+            minedFile().writeText(root.toString(2))
+        } catch (_: Exception) {}
     }
 }

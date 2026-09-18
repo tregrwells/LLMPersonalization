@@ -1,58 +1,53 @@
 package com.treg.llmpersonalization.ui.theme
 
-import android.app.Activity
-import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.dynamicDarkColorScheme
-import androidx.compose.material3.dynamicLightColorScheme
-import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.graphics.Color
 
-private val DarkColorScheme = darkColorScheme(
-    primary = Purple80,
-    secondary = PurpleGrey80,
-    tertiary = Pink80
-)
+// Dark theme is the only theme — this is a fixed-identity app.
+// Light mode falls back to the same palette so system switching
+// has no visible effect.
+private val DarkColors = darkColorScheme(
+    primary             = BloodRedBright,
+    onPrimary           = BoneWhite,
+    primaryContainer    = BloodRedDim,
+    onPrimaryContainer  = BoneWhite,
 
-private val LightColorScheme = lightColorScheme(
-    primary = Purple40,
-    secondary = PurpleGrey40,
-    tertiary = Pink40
+    secondary           = MutedLilac,
+    onSecondary         = DeepVoid,
+    secondaryContainer  = ShadowCourt,
+    onSecondaryContainer= BoneWhite,
 
-    /* Other default colors to override
-    background = Color(0xFFFFFBFE),
-    surface = Color(0xFFFFFBFE),
-    onPrimary = Color.White,
-    onSecondary = Color.White,
-    onTertiary = Color.White,
-    onBackground = Color(0xFF1C1B1F),
-    onSurface = Color(0xFF1C1B1F),
-    */
+    tertiary            = Candlelight,
+    onTertiary          = DeepVoid,
+
+    background          = DeepVoid,
+    onBackground        = BoneWhite,
+
+    surface             = CryptFloor,
+    onSurface           = BoneWhite,
+    surfaceVariant      = ShadowCourt,
+    onSurfaceVariant    = MutedLilac,
+
+    outline             = BorderWine,
+    outlineVariant      = Onyx,
+
+    error               = ErrorScarlet,
+    onError             = BoneWhite,
+    errorContainer      = BloodRedDim,
+    onErrorContainer    = BoneWhite,
 )
 
 @Composable
 fun LLMPersonalizationTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
-    // Dynamic color is available on Android 12+
-    dynamicColor: Boolean = true,
+    @Suppress("UNUSED_PARAMETER") darkTheme: Boolean = isSystemInDarkTheme(),
     content: @Composable () -> Unit
 ) {
-    val colorScheme = when {
-        dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
-            val context = LocalContext.current
-            if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-        }
-
-        darkTheme -> DarkColorScheme
-        else -> LightColorScheme
-    }
-
     MaterialTheme(
-        colorScheme = colorScheme,
-        typography = Typography,
-        content = content
+        colorScheme = DarkColors,
+        typography  = AppTypography,
+        content     = content
     )
 }
