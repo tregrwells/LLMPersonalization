@@ -36,7 +36,6 @@ fun MainScreen(
     val chats = remember(user, appState.chatsVersion) { appState.listChats() }
     val activeId = appState.currentChat?.id
 
-    // Dialog state
     var menuChat by remember { mutableStateOf<Chat?>(null) }
     var renameChat by remember { mutableStateOf<Chat?>(null) }
     var deleteChat by remember { mutableStateOf<Chat?>(null) }
@@ -135,93 +134,123 @@ fun MainScreen(
         }
     }
 
-    // --- Chat options menu ---
-    menuChat?.let { chat ->
-        AlertDialog(
-            onDismissRequest = { menuChat = null },
-            title = { Text(chat.title, maxLines = 2, overflow = TextOverflow.Ellipsis) },
-            text = { Text("Manage this chat") },
-            confirmButton = {
-                TextButton(onClick = {
-                    renameText = chat.title
-                    renameChat = chat
-                    menuChat = null
-                }) { Text("Rename") }
-            },
-            dismissButton = {
-                TextButton(onClick = {
-                    deleteChat = chat
-                    menuChat = null
-                }) { Text("Delete", color = MaterialTheme.colorScheme.error) }
-            }
-        )
-    }
+    ChatOptionsDialog(
+        chat = menuChat,
+        onDismiss = { menuChat = null },
+        onRename = { c ->
+            renameText = c.title
+            renameChat = c
+            menuChat = null
+        },
+        onDelete = { c ->
+            deleteChat = c
+            menuChat = null
+        }
+    )
 
-    // --- Rename dialog ---
-    renameChat?.let { chat ->
-        AlertDialog(
-            onDismissRequest = { renameChat = null },
-            title = { Text("Rename chat") },
-            text = {
-                OutlinedTextField(
-                    value = renameText,
-                    onValueChange = { renameText = it },
-                    label = { Text("Title") },
-                    singleLine = true
-                )
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        val t = renameText.trim()
-                        if (t.isNotEmpty()) {
-                            appState.chatStore?.rename(chat, t)
-                            if (appState.currentChat?.id == chat.id) {
-                                // refresh currently open chat title by re-reading from store
-                                appState.openChat(chat)
-                            }
-                            appState.notifyChatUpdated()
-                        }
-                        renameChat = null
-                    }
-                ) { Text("Save") }
-            },
-            dismissButton = {
-                TextButton(onClick = { renameChat = null }) { Text("Cancel") }
+    RenameDialog(
+        chat = renameChat,
+        initialText = renameText,
+        onTextChange = { renameText = it },
+        onDismiss = { renameChat = null },
+        onConfirm = {
+            val c = renameChat ?: return@RenameDialog
+            val t = renameText.trim()
+            if (t.isNotEmpty()) {
+                appState.chatStore?.rename(c, t)
+                appState.notifyChatUpdated()
             }
-        )
-    }
+            renameChat = null
+        }
+    )
 
-    // --- Delete confirm ---
-    deleteChat?.let { chat ->
-        AlertDialog(
-            onDismissRequest = { deleteChat = null },
-            title = { Text("Delete chat?") },
-            text = { Text("\"${chat.title}\" will be permanently removed.") },
-            confirmButton = {
-                TextButton(onClick = {
-                    appState.chatStore?.delete(chat.id)
-                    if (appState.currentChat?.id == chat.id) {
-                        appState.openChat(
-                            // null it out — no current chat
-                            Chat(
-                                id = "",
-                                userId = "",
-                                title = "",
-                                createdAt = 0L,
-                                updatedAt = 0L
-                            ).also { /* placeholder */ }
-                        )
-                    }
-                    appState.notifyChatUpdated()
-                    deleteChat = null
-                }) { Text("Delete", color = MaterialTheme.colorScheme.error) }
-            },
-            dismissButton = {
-                TextButton(onClick = { deleteChat = null }) { Text("Cancel") }
+    DeleteDialog(
+        chat = deleteChat,
+        onDismiss = { deleteChat = null },
+        onConfirm = {
+            val c = deleteChat ?: return@DeleteDialog
+            appState.chatStore?.delete(c.id)
+            if (appState.currentChat?.id == c.id) {
+                appState.clearCurrentChat()
             }
-        )
-    }
+            appState.notifyChatUpdated()
+            deleteChat = null
+        }
+    )
+}
+
+@Composable
+private fun ChatOptionsDialog(
+    chat: Chat?,
+    onDismiss: () -> Unit,
+    onRename: (Chat) -> Unit,
+    onDelete: (Chat) -> Unit
+) {
+    if (chat == null) return
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(chat.title, maxLines = 2, overflow = TextOverflow.Ellipsis) },
+        text = { Text("Manage this chat") },
+        confirmButton = {
+            TextButton(onClick = { onRename(chat) }) { Text("Rename") }
+        },
+        dismissButton = {
+            TextButton(onClick = { onDelete(chat) }) {
+                Text("Delete", color = MaterialTheme.colorScheme.error)
+            }
+        }
+    )
+}
+
+@Composable
+private fun RenameDialog(
+    chat: Chat?,
+    initialText: String,
+    onTextChange: (String) -> Unit,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit
+) {
+    if (chat == null) return
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Rename chat") },
+        text = {
+            OutlinedTextField(
+                value = initialText,
+                onValueChange = onTextChange,
+                label = { Text("Title") },
+                singleLine = true
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm) { Text("Save") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
+}
+
+@Composable
+private fun DeleteDialog(
+    chat: Chat?,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit
+) {
+    if (chat == null) return
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Delete chat?") },
+        text = { Text("This chat will be permanently removed.") },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text("Delete", color = MaterialTheme.colorScheme.error)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -243,10 +272,7 @@ private fun ChatDrawerItem(
             .padding(horizontal = 12.dp, vertical = 2.dp)
             .clip(RoundedCornerShape(28.dp))
             .background(bg)
-            .combinedClickable(
-                onClick = onOpen,
-                onLongClick = onLongPress
-            )
+            .combinedClickable(onClick = onOpen, onLongClick = onLongPress)
             .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {

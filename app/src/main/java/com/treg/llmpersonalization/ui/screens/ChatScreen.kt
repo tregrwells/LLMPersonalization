@@ -17,9 +17,11 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.treg.llmpersonalization.AppState
+import com.treg.llmpersonalization.data.Chat
 import com.treg.llmpersonalization.data.Message
 import com.treg.llmpersonalization.data.MessageRole
 import com.treg.llmpersonalization.logic.ChatOrchestrator
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -29,7 +31,6 @@ fun ChatScreen(appState: AppState) {
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
     val chat = appState.currentChat
-    val chatStore = appState.chatStore
 
     var messages by remember(chat?.id) {
         mutableStateOf(chat?.messages?.toList() ?: emptyList())
@@ -37,21 +38,18 @@ fun ChatScreen(appState: AppState) {
     var input by remember(chat?.id) { mutableStateOf("") }
     var busy by remember(chat?.id) { mutableStateOf(false) }
 
-    // Auto-scroll to bottom on new messages
     LaunchedEffect(messages.size, busy) {
         if (messages.isNotEmpty()) {
             listState.animateScrollToItem(messages.size + if (busy) 1 else 0)
         }
     }
 
-    if (chat == null) {
+    if (chat == null || chat.id.isEmpty()) {
         EmptyState()
         return
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
-
-        // --- Messages ---
         LazyColumn(
             state = listState,
             modifier = Modifier
@@ -62,12 +60,9 @@ fun ChatScreen(appState: AppState) {
             contentPadding = PaddingValues(vertical = 12.dp)
         ) {
             items(messages) { msg -> MessageBubble(msg) }
-            if (busy) {
-                item { GeneratingBubble() }
-            }
+            if (busy) { item { GeneratingBubble() } }
         }
 
-        // --- Input ---
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -167,7 +162,7 @@ private fun ThinkBlock(think: String, color: androidx.compose.ui.graphics.Color)
             .padding(8.dp)
     ) {
         Text(
-            if (expanded) "▾ Reasoning" else "▸ Reasoning",
+            if (expanded) "v Reasoning" else "> Reasoning",
             style = MaterialTheme.typography.labelSmall,
             color = color.copy(alpha = 0.7f)
         )
@@ -190,8 +185,10 @@ private fun GeneratingBubble() {
     ) {
         Surface(
             color = MaterialTheme.colorScheme.surfaceVariant,
-            shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp,
-                bottomStart = 4.dp, bottomEnd = 16.dp),
+            shape = RoundedCornerShape(
+                topStart = 16.dp, topEnd = 16.dp,
+                bottomStart = 4.dp, bottomEnd = 16.dp
+            ),
             modifier = Modifier.widthIn(max = 320.dp)
         ) {
             Text(
@@ -204,15 +201,14 @@ private fun GeneratingBubble() {
     }
 }
 
-/** Executes one turn: persist user msg, generate, persist assistant msg. */
 private fun send(
     appState: AppState,
-    chat: com.treg.llmpersonalization.data.Chat,
+    chat: Chat,
     rawInput: String,
     setInput: (String) -> Unit,
     setBusy: (Boolean) -> Unit,
     setMessages: (List<Message>) -> Unit,
-    scope: kotlinx.coroutines.CoroutineScope
+    scope: CoroutineScope
 ) {
     val l = appState.llama ?: return
     val e = appState.extractor ?: return
@@ -223,9 +219,9 @@ private fun send(
 
     val userMsg = Message(MessageRole.USER, prompt, null, System.currentTimeMillis())
 
-    // Auto-title on first message
     if (chat.messages.isEmpty() && chat.title == "New Chat") {
-        chat.title = prompt.take(40).let { if (prompt.length > 40) "$it…" else it }
+        val short = if (prompt.length > 40) prompt.take(40) + "..." else prompt
+        chat.title = short
     }
     chat.messages.add(userMsg)
     store.save(chat)

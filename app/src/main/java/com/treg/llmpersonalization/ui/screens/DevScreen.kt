@@ -15,6 +15,7 @@ import com.treg.llmpersonalization.AppState
 @Composable
 fun DevScreen(appState: AppState, onBack: () -> Unit) {
     val trace = appState.lastTrace
+
     val debugText = buildString {
         if (trace == null) {
             append("(no generation yet)")
@@ -31,6 +32,7 @@ fun DevScreen(appState: AppState, onBack: () -> Unit) {
             trace.skipped?.let { append("skipped: $it\n") }
         }
     }
+
     val minedText = appState.beliefs?.formatMined() ?: "(store not loaded)"
 
     Scaffold(
@@ -40,6 +42,11 @@ fun DevScreen(appState: AppState, onBack: () -> Unit) {
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                },
+                actions = {
+                    TextButton(onClick = { appState.lastTrace = null }) {
+                        Text("Clear trace")
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -57,15 +64,45 @@ fun DevScreen(appState: AppState, onBack: () -> Unit) {
                 .padding(pad)
                 .padding(16.dp)
                 .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Text("Last trace", style = MaterialTheme.typography.titleMedium)
-            Text(debugText, style = MaterialTheme.typography.bodySmall)
+            SectionLabel("Last generation")
+            Surface(
+                color = MaterialTheme.colorScheme.surface,
+                shape = MaterialTheme.shapes.medium,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    debugText,
+                    modifier = Modifier.padding(12.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            }
 
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-
-            Text("Mined beliefs (raw)", style = MaterialTheme.typography.titleMedium)
-            Text(minedText, style = MaterialTheme.typography.bodySmall)
+            Spacer(Modifier.height(8.dp))
+            SectionLabel("Mined beliefs (raw)")
+            Surface(
+                color = MaterialTheme.colorScheme.surface,
+                shape = MaterialTheme.shapes.medium,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    minedText,
+                    modifier = Modifier.padding(12.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            }
         }
     }
+}
+
+@Composable
+private fun SectionLabel(text: String) {
+    Text(
+        text,
+        style = MaterialTheme.typography.labelLarge,
+        color = MaterialTheme.colorScheme.primary
+    )
 }

@@ -57,6 +57,10 @@ class AppState(app: Application) : AndroidViewModel(app) {
 
     var lastTrace: ChatOrchestrator.Trace? by mutableStateOf(null)
 
+    /** P36 -> "capital", P50 -> "author", etc. Loaded from assets. */
+    var wikidataLabels: Map<String, String> by mutableStateOf(emptyMap())
+        private set
+
     private var beliefJson: String? = null
 
     suspend fun initialize() {
@@ -90,6 +94,17 @@ class AppState(app: Application) : AndroidViewModel(app) {
 
             beliefJson = withContext(Dispatchers.IO) {
                 ctx.assets.open("belief_tables_v1_8.json").bufferedReader().readText()
+            }
+
+            wikidataLabels = withContext(Dispatchers.IO) {
+                try {
+                    val obj = org.json.JSONObject(
+                        ctx.assets.open("wikidata_labels.json").bufferedReader().readText()
+                    )
+                    val m = mutableMapOf<String, String>()
+                    for (k in obj.keys()) m[k] = obj.getString(k)
+                    m
+                } catch (_: Exception) { emptyMap() }
             }
 
             userStore = UserStore.load(ctx)
@@ -127,6 +142,10 @@ class AppState(app: Application) : AndroidViewModel(app) {
         currentChat = c
         chatsVersion++
         return c
+    }
+
+    fun clearCurrentChat() {
+        currentChat = null
     }
 
     fun notifyChatUpdated() { chatsVersion++ }
