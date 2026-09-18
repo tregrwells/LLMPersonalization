@@ -16,8 +16,8 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        // Pixel 10 is arm64-v8a only. Excluding x86_64/armeabi-v7a
-        // cuts native lib size significantly and speeds the build.
+        // Pixel 10 is arm64-v8a only. Excluding other ABIs cuts native
+        // lib size significantly and speeds the build.
         ndk {
             abiFilters += "arm64-v8a"
         }
@@ -37,9 +37,9 @@ android {
         }
     }
 
-    // Pin to the NDK AGP 9.4 defaults to; falls back to 27.x if the
-    // native build throws a toolchain error (llama.cpp's Android
-    // example was tested against r27).
+    // NDK AGP 9.4 defaults to. Falls back to 27.x if the llama.cpp
+    // build throws a toolchain error — llama.cpp's Android example
+    // was tested against NDK r27.
     ndkVersion = "28.2.13676358"
 
     externalNativeBuild {
@@ -69,8 +69,8 @@ android {
     }
 
     // Do NOT compress GGUF or ONNX. Uncompressed assets get a real fd
-    // via AssetManager.openFd(), which lets us stream-copy to filesDir
-    // and lets llama.cpp mmap the result.
+    // via AssetManager.openFd(), letting us stream-copy to filesDir
+    // and letting llama.cpp mmap the result.
     androidResources {
         noCompress += listOf("gguf", "onnx")
     }
