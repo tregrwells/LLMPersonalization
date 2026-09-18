@@ -1,0 +1,144 @@
+package com.treg.llmpersonalization
+
+import android.app.Application
+import android.content.Context
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.lifecycle.AndroidViewModel
+import com.treg.llmpersonalization.data.ChatStore
+import com.treg.llmpersonalization.data.User
+import com.treg.llmpersonalization.data.UserStore
+import com.treg.llmpersonalization.engine.ExtractorBridge
+import com.treg.llmpersonalization.engine.LlamaBridge
+import com.treg.llmpersonalization.logic.BeliefStore
+import com.treg.llmpersonalization.logic.ChatOrchestrator
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.io.FileOutputStream
+
+class AppState(app: Application) : AndroidViewModel(app) {
+
+    // Lifecycle-managed state
+    var llama: LlamaBridge.Loaded? by mutableStateOf(null)
+        private set
+    var extractor: ExtractorBridge? by mutableStateOf(null)
+        private set
+    var beliefs: BeliefStore? by mutableStateOf(null)
+        private set
+    var userStore: UserStore? by mutableStateOf(null)
+        private set
+    var chatStore: ChatStore? by mutableStateOf(null)
+        private set
+    var currentUser: User? by mutableStateOf(null)
+        private set
+
+    // UI-facing
+    var status: String by mutableStateOf("Starting...")
+        private set
+    var progress: Float by mutableFloatStateOf(0f)
+        private set
+    var ready: Boolean by mutableStateOf(false)
+        private set
+    var lastTrace: ChatOrchestrator.Trace? by mutableStateOf(null)
+
+    private var beliefJson: String? = null
+
+    suspend fun initialize() {
+        if (ready) return
+        val ctx = getApplication<Application>()
+        try {
+            status = "Preparing model files"
+            progress = 0f
+            val modelFile = withContext(Dispatchers.IO) {
+                copyAsset(ctx, "qwen3.5-0.8b-q8_0.gguf") { p -> progress = p * 0.65f }
+            }
+            val onnxFile = withContext(Dispatchers.IO) {
+                copyAsset(ctx, "extractor_int8.onnx") { p -> progress = 0.65f + p * 0.1f }
+            }
+
+            status = "Loading base model"
+            progress = 0.78f
+            val l = withContext(Dispatchers.IO) {
+                LlamaBridge.load(modelFile.absolutePath)
+            } ?: run {
+                status = "Model load FAILED"
+                return
+            }
+            llama = l
+
+            status = "Loading extractor"
+            progress = 0.9f
+            val schemaJson = withContext(Dispatchers.IO) {
+                ctx.assets.open("rebel_schema.json").bufferedReader().readText()
+            }
+            val e = withContext(Dispatchers.IO) {
+                ExtractorBridge.load(ctx, onnxFile, schemaJson)
+            }
+            extractor = e
+
+            beliefJson = withContext(Dispatchers.IO) {
+                ctx.assets.open("belief_tables_v1_8.json").bufferedReader().readText()
+            }
+
+            userStore = UserStore.load(ctx)
+            chatStore = ChatStore.load(ctx)
+
+            status = "Ready"
+            progress = 1f
+            ready = true
+        } catch (t: Throwable) {
+            status = "Init failed: ${t.message}"
+        }
+    }
+
+    fun selectUser(user: User) {
+        val json = beliefJson ?: return
+        beliefs = BeliefStore.load(getApplication(), json, user.id)
+        currentUser = user
+    }
+
+    fun clearUser() {
+        beliefs = null
+        currentUser = null
+    }
+
+    private suspend fun copyAsset(
+        context: Context,
+        assetName: String,
+        destName: String = assetName,
+        onProgress: (Float) -> Unit = {}
+    ): File {
+        val dest = File(context.filesDir, destName)
+        if (dest.exists() && dest.length() > 0) {
+            onProgress(1f)
+            return dest
+        }
+        val tmp = File(context.filesDir, "$destName.tmp")
+        if (tmp.exists()) tmp.delete()
+
+        val total = try {
+            context.assets.openFd(assetName).use { it.length }
+        } catch (_: Exception) { 0L }
+
+        var copied = 0L
+        context.assets.open(assetName).use { input ->
+            FileOutputStream(tmp).use { output ->
+                val buf = ByteArray(1 shl 20)
+                while (true) {
+                    val n = input.read(buf)
+                    if (n <= 0) break
+                    output.write(buf, 0, n)
+                    copied += n
+                    if (total > 0) onProgress(copied.toFloat() / total.toFloat())
+                }
+                output.flush()
+                output.fd.sync()
+            }
+        }
+        tmp.renameTo(dest)
+        return dest
+    }
+}

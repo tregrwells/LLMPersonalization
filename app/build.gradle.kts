@@ -13,24 +13,12 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "1.0"
-
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-
-        ndk {
-            abiFilters += "arm64-v8a"
-        }
-
+        ndk { abiFilters += "arm64-v8a" }
         externalNativeBuild {
             cmake {
-                cppFlags += listOf(
-                    "-std=c++17",
-                    "-O3",
-                    "-fexceptions",
-                    "-frtti",
-                )
-                arguments += listOf(
-                    "-DANDROID_STL=c++_shared",
-                )
+                cppFlags += listOf("-std=c++17", "-O3", "-fexceptions", "-frtti")
+                arguments += listOf("-DANDROID_STL=c++_shared")
             }
         }
     }
@@ -59,19 +47,11 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    buildFeatures {
-        compose = true
-    }
+    buildFeatures { compose = true }
 
-    androidResources {
-        noCompress += listOf("gguf", "onnx")
-    }
+    androidResources { noCompress += listOf("gguf", "onnx") }
 
-    packaging {
-        jniLibs {
-            useLegacyPackaging = false
-        }
-    }
+    packaging { jniLibs { useLegacyPackaging = false } }
 }
 
 dependencies {
@@ -83,6 +63,11 @@ dependencies {
     implementation(libs.androidx.compose.ui.graphics)
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.compose.material3)
+    implementation("androidx.compose.material:material-icons-core")
+
+    // Navigation + ViewModel
+    implementation("androidx.navigation:navigation-compose:2.8.4")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
 
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.22.0")
 
