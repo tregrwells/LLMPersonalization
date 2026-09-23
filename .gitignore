@@ -41,3 +41,12 @@ app/.cxx/
 # Colab / Python artifacts
 __pycache__/
 *.pyc
+
+# Phase C cleanup — ignore backups and logs
+*.bak
+*.bak[0-9]*
+*.20260923_*.bak
+build_log*.txt
+phase_c_*.ps1
+phase_c_*.txt
+*.log
