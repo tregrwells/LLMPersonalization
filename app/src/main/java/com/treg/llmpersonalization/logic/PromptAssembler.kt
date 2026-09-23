@@ -111,12 +111,20 @@ object PromptAssembler {
         }
 
         // 3. Personal mode — attribution-grouped facts
-        var system = "Answer the user's question using the facts provided. If a fact " +
-            "clearly relates to the question, INFER the answer — do not require " +
-            "literal word matches. When two facts seem relevant and conflict, prefer " +
-            "the one that reflects the user's CURRENT state (present tense) over any " +
-            "past fact. Only refuse if NO fact is relevant. Do not mention other " +
-            "people unless the question asks about them."
+        var system = if (ctx.temporal == "past") {
+                "Answer the user's question using the facts provided. The user " +
+                    "is asking about their PAST state, so prefer facts that reflect " +
+                    "a past or previous state (past tense: used to, previously, " +
+                    "before). Do NOT substitute a current fact for a past one. " +
+                    "Only refuse if NO fact is relevant."
+            } else {
+                "Answer the user's question using the facts provided. If a fact " +
+                    "clearly relates to the question, INFER the answer — do not require " +
+                    "literal word matches. When two facts seem relevant and conflict, " +
+                    "prefer the one that reflects the user's CURRENT state (present " +
+                    "tense) over any past fact. Only refuse if NO fact is relevant. " +
+                    "Do not mention other people unless the question asks about them."
+            }
 
         // Reasoning override (arithmetic, comparisons)
         if (ctx.qtype == "reasoning") {

@@ -26,16 +26,6 @@ import java.io.FileOutputStream
 
 class AppState(app: Application) : AndroidViewModel(app) {
 
-    companion object {
-        @Volatile
-        var instance: AppState? = null
-            private set
-    }
-
-    init {
-        instance = this
-    }
-
     var llama: LlamaBridge.Loaded? by mutableStateOf(null)
         private set
     var extractor: ExtractorBridge? by mutableStateOf(null)

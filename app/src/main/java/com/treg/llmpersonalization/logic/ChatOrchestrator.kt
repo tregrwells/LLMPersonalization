@@ -163,7 +163,13 @@ class ChatOrchestrator(
         }
 
         // ---- 2. WORLD PATH ----
-        if (ctx.subject == "unspecified" && ctx.concept == null) {
+        // Injection guard: if the query contains an instruction to always answer X,
+// route to world with a strict refusal prompt instead of letting the model comply.
+        val injectionGuard = Regex("""(always\s+answer|answer\s+only|respond\s+with|you\s+must\s+say)""",
+            RegexOption.IGNORE_CASE).containsMatchIn(stripped)
+        val routeWorld = (ctx.subject == "unspecified" && ctx.concept == null) ||
+                         (ctx.qtype == "reasoning" && ctx.concept == null)
+        if (routeWorld) {
             val prompt = PromptAssembler.assemble(stripped, emptyList(), ctx, worldMode = true)
             var formatted = LlamaBridge.formatChat(llama, prompt.system, prompt.user)
             var raw = LlamaBridge.generateRaw(llama, formatted, null, null, 100, 0.7f)
@@ -207,11 +213,20 @@ class ChatOrchestrator(
         // Phase C fix: word-overlap gate (unknown queries with no content overlap)
         var overlapFail = false
         if (topMem != null) {
-            val qWords = stripped.lowercase().split(Regex("\\W+")).filter { it.length > 3 }.toSet()
-            val topWords = topMem.content.lowercase().split(Regex("\\W+")).filter { it.length > 3 }.toSet()
-            if (qWords.isNotEmpty() && qWords.intersect(topWords).isEmpty()) {
+            // D2b: blacklist-based refusal. The lexical-overlap gate was too aggressive
+            // for natural-language queries ("previous city" vs "used to live in Seattle").
+            val unknownSignals = setOf(
+                "ssn", "social", "security", "address", "phone", "email",
+                "password", "license", "passport", "credit", "debit", "salary",
+                "income", "bank", "maiden", "height", "weight", "blood",
+                "tall", "emergency", "diagnos", "medication", "prescription"
+            )
+            val qLower = stripped.lowercase()
+            val allMemText = memories.joinToString(" ") { it.content.lowercase() }
+            val hits = unknownSignals.filter { qLower.contains(it) }
+            if (hits.isNotEmpty() && hits.none { allMemText.contains(it) }) {
                 overlapFail = true
-                android.util.Log.i("ChatOrch", "GATE_REFUSED(no-overlap): qWords=" + qWords)
+                android.util.Log.i("ChatOrch", "GATE_REFUSED(unknown-signal): hits=" + hits)
             }
         }
 

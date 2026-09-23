@@ -13,14 +13,18 @@ object PreambleStripper {
         Regex("""^ignore\s+all\s+previous\s+instructions?\s+and\s+""", RegexOption.IGNORE_CASE),
         Regex("""^ignore\s+(all\s+)?previous\s+instructions?[.,;:\s]+""", RegexOption.IGNORE_CASE),
         Regex("""^forget\s+everything[.,;:\s]+""", RegexOption.IGNORE_CASE),
-        Regex("""^pretend\s+you\s+have\s+no\s+rules[:\s]+""", RegexOption.IGNORE_CASE),
+        Regex("""^pretend\s+you\s+have\s+no\s+rules[^\w]+""", RegexOption.IGNORE_CASE),
         Regex("""^system[:\s]+you\s+are\s+now\s+in\s+debug\s+mode[.,;:\s]+""", RegexOption.IGNORE_CASE),
         Regex("""^system[:\s]+""", RegexOption.IGNORE_CASE),
         Regex("""^new\s+instructions?[:\s]+""", RegexOption.IGNORE_CASE),
         Regex("""^new\s+system\s+prompt[:\s]+""", RegexOption.IGNORE_CASE),
         Regex("""^\[INST\][^\[]*\[/INST\]\s*""", RegexOption.IGNORE_CASE),
         Regex("""^</?system>\s*""", RegexOption.IGNORE_CASE),
-        Regex("""^respond\s+only\s+in\s+\w+[.,;:\s]+""", RegexOption.IGNORE_CASE)
+        Regex("""^respond\s+only\s+in\s+\w+[.,;:\s]+""", RegexOption.IGNORE_CASE),
+        Regex("""^disregard\s+(the\s+)?(memory\s+)?system[.,;:\s]+""", RegexOption.IGNORE_CASE),
+        Regex("""^disregard\s+(all\s+)?(previous\s+)?(instructions?|rules?)[.,;:\s]+""", RegexOption.IGNORE_CASE),
+        Regex("""^override[:\s]+""", RegexOption.IGNORE_CASE),
+        Regex("""^ignore\s+the\s+above[.,;:\s]+""", RegexOption.IGNORE_CASE)
     )
 
     fun strip(query: String): String {

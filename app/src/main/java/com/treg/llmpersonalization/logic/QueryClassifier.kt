@@ -30,7 +30,7 @@ object QueryClassifier {
     private val OTHER_RE     = Regex("""\bmy\s+(friend|sister|brother|coworker|mother|father)\b""", RegexOption.IGNORE_CASE)
     private val USER_RE      = Regex("""\bmy\b|\bme\b|\bi\b""", RegexOption.IGNORE_CASE)
     private val CURRENT_RE   = Regex("""\b(currently|current|now|these\s+days|present)\b""", RegexOption.IGNORE_CASE)
-    private val PAST_RE      = Regex("""\b(used\s+to|previous|formerly|old|former|past|before)\b""", RegexOption.IGNORE_CASE)
+    private val PAST_RE      = Regex("""\b(used\s+to|previous|formerly|old|former|past|before|did\s+i\s+use|did\s+i\s+have|did\s+i\s+work)\b""", RegexOption.IGNORE_CASE)
 
     private val CONCEPT_PATTERNS: List<Triple<String, Regex, String>> = listOf(
         Triple("P36", Regex("""\bfrance\b""",   RegexOption.IGNORE_CASE), "france"),
