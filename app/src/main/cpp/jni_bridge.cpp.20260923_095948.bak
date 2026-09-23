@@ -77,34 +77,19 @@ Java_com_treg_llmpersonalization_engine_LlamaBridge_nativeLoad(
     JNIEnv * env, jobject, jstring model_path)
 {
     std::string path = jstring_to_std(env, model_path);
-    LOGI("nativeLoad: path=%s", path.c_str());
-    {
-        FILE * f = fopen(path.c_str(), "rb");
-        if (f) {
-            fseek(f, 0, SEEK_END);
-            long sz = ftell(f);
-            fclose(f);
-            LOGI("nativeLoad: file size = %ld bytes (%.2f GB)",
-                 sz, sz / 1073741824.0);
-        } else {
-            LOGE("nativeLoad: fopen FAILED for %s", path.c_str());
-        }
-    }
-    int64_t t_load_start = now_ms();
     llama_backend_init();
     llama_model_params mp = llama_model_default_params();
     mp.n_gpu_layers = 0;
     llama_model * model = llama_model_load_from_file(path.c_str(), mp);
-    LOGI("nativeLoad: model loaded in %lld ms", (long long)(now_ms() - t_load_start));
     if (!model) { LOGE("model load failed"); return 0; }
     llama_context_params cp = llama_context_default_params();
-    cp.n_ctx = 1024; cp.n_batch = 1024;
+    cp.n_ctx = 4096; cp.n_batch = 512;
     {
-        // Reduced to 4 for memory headroom. 6 threads oversubscribed the
-        // Pixel 10's memory controller during prefill and caused swap
-        // thrashing. 4 keeps a full big.LITTLE cluster busy without the
-        // pressure.
-        cp.n_threads = 4;
+        unsigned hw = std::thread::hardware_concurrency();
+        if (hw == 0) hw = 4;
+        // Use big.LITTLE-aware count: cap at 6 so efficiency cores
+        // aren't oversubscribed relative to the prime + perf cluster.
+        cp.n_threads = (hw >= 8) ? 6 : (hw >= 6 ? 5 : 4);
     }
     llama_context * ctx = llama_init_from_model(model, cp);
     if (!ctx) { llama_model_free(model); return 0; }
@@ -397,40 +382,22 @@ Java_com_treg_llmpersonalization_engine_LlamaBridge_nativeGenerateRaw(
     auto * h = reinterpret_cast<LlamaHandle *>(handle);
     if (!h->ctx || !h->model) return env->NewStringUTF("[error: model not loaded]");
 
-    int64_t t_enter = now_ms();
     std::string formatted = jstring_to_std(env, formatted_prompt);
-    LOGI("generateRaw: ENTER, prompt %zu chars", formatted.size());
     const llama_vocab * vocab = llama_model_get_vocab(h->model);
 
-    int64_t t_tok_start = now_ms();
     int32_t n_tok = -llama_tokenize(vocab, formatted.c_str(), formatted.size(),
                                      nullptr, 0, true, true);
-    if (n_tok <= 0) {
-        LOGE("generateRaw: tokenize probe failed, n_tok=%d", n_tok);
-        return env->NewStringUTF("[error: tokenize failed]");
-    }
-    LOGI("generateRaw: probe tokenize = %d tokens in %lld ms",
-         n_tok, (long long)(now_ms() - t_tok_start));
-
+    if (n_tok <= 0) return env->NewStringUTF("[error: tokenize failed]");
     std::vector<llama_token> tokens(n_tok);
-    int64_t t_tok2 = now_ms();
     if (llama_tokenize(vocab, formatted.c_str(), formatted.size(),
                        tokens.data(), tokens.size(), true, true) < 0)
         return env->NewStringUTF("[error: tokenize buffer]");
-    LOGI("generateRaw: full tokenize done in %lld ms",
-         (long long)(now_ms() - t_tok2));
 
-    int64_t t_clear = now_ms();
     clear_kv(h->ctx);
-    LOGI("generateRaw: clear_kv in %lld ms", (long long)(now_ms() - t_clear));
-
     int64_t t_prefill_start = now_ms();
     llama_batch batch = llama_batch_get_one(tokens.data(), tokens.size());
-    LOGI("generateRaw: PREFILL STARTING with %d tokens", (int) tokens.size());
-    if (llama_decode(h->ctx, batch) != 0) {
-        LOGE("generateRaw: llama_decode returned non-zero");
+    if (llama_decode(h->ctx, batch) != 0)
         return env->NewStringUTF("[error: prefill failed]");
-    }
     int64_t t_prefill_ms = now_ms() - t_prefill_start;
     int32_t n_past = tokens.size();
     LOGI("generateRaw: prefill %d tokens in %lld ms (%.1f tok/s)",

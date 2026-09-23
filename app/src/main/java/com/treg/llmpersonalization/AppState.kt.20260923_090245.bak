@@ -13,11 +13,8 @@ import com.treg.llmpersonalization.data.ChatStore
 import com.treg.llmpersonalization.data.User
 import com.treg.llmpersonalization.data.UserStore
 import com.treg.llmpersonalization.engine.ExtractorBridge
-import com.treg.llmpersonalization.engine.EmbedderBridge
 import com.treg.llmpersonalization.engine.LlamaBridge
-import com.treg.llmpersonalization.engine.RerankerBridge
 import com.treg.llmpersonalization.logic.BeliefStore
-import com.treg.llmpersonalization.logic.MemoryStore
 import com.treg.llmpersonalization.logic.ChatOrchestrator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -31,12 +28,6 @@ class AppState(app: Application) : AndroidViewModel(app) {
     var extractor: ExtractorBridge? by mutableStateOf(null)
         private set
     var beliefs: BeliefStore? by mutableStateOf(null)
-        private set
-    var memoryStore: MemoryStore? by mutableStateOf(null)
-        private set
-    var embedder: EmbedderBridge? by mutableStateOf(null)
-        private set
-    var reranker: RerankerBridge? by mutableStateOf(null)
         private set
     var userStore: UserStore? by mutableStateOf(null)
         private set
@@ -79,28 +70,14 @@ class AppState(app: Application) : AndroidViewModel(app) {
             status = "Preparing model files"
             progress = 0f
             val modelFile = withContext(Dispatchers.IO) {
-                // Ship model: Qwen3.5-0.8B Q8_0. Fits comfortably in the
-                // Pixel 10's available RAM (~2 GB free under v15 runtime).
-                // 4B models (Q4_K_M, Q3_K_S) were tested and cannot fit;
-                // see handoff v4.0 Part 9 for details.
-                status = "Copying bundled 0.8B model"
-                progress = 0.20f
-                copyAsset(ctx, "qwen3.5-0.8b-q8_0.gguf") { p ->
-                    progress = 0.20f + p * 0.35f
-                }
+                copyAsset(ctx, "qwen3.5-0.8b-q8_0.gguf") { p -> progress = p * 0.65f }
             }
             val onnxFile = withContext(Dispatchers.IO) {
-                copyAsset(ctx, "extractor_int8.onnx") { p -> progress = 0.55f + p * 0.10f }
-            }
-            val embedderFile = withContext(Dispatchers.IO) {
-                copyAsset(ctx, "embedder_int8.onnx") { p -> progress = 0.65f + p * 0.07f }
-            }
-            val rerankerFile = withContext(Dispatchers.IO) {
-                copyAsset(ctx, "reranker_int8.onnx") { p -> progress = 0.72f + p * 0.06f }
+                copyAsset(ctx, "extractor_int8.onnx") { p -> progress = 0.65f + p * 0.1f }
             }
 
             status = "Loading base model"
-            progress = 0.85f
+            progress = 0.78f
             val l = withContext(Dispatchers.IO) {
                 LlamaBridge.load(modelFile.absolutePath)
             } ?: run { status = "Model load FAILED"; return }
@@ -115,14 +92,8 @@ class AppState(app: Application) : AndroidViewModel(app) {
                 ExtractorBridge.load(ctx, onnxFile, schemaJson)
             }
 
-            status = "Loading retrieval"
-            progress = 0.94f
-            memoryStore = withContext(Dispatchers.IO) { MemoryStore.load(ctx) }
-            embedder = withContext(Dispatchers.IO) { EmbedderBridge.load(ctx, embedderFile) }
-            reranker = withContext(Dispatchers.IO) { RerankerBridge.load(ctx, rerankerFile) }
-
             beliefJson = withContext(Dispatchers.IO) {
-                ctx.assets.open("belief_tables_v15.json").bufferedReader().readText()
+                ctx.assets.open("belief_tables_v1_8.json").bufferedReader().readText()
             }
 
             wikidataLabels = withContext(Dispatchers.IO) {

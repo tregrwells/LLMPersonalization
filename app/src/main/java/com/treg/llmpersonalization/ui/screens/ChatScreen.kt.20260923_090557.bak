@@ -233,7 +233,7 @@ private fun send(
 
     scope.launch {
         val trace = withContext(Dispatchers.IO) {
-            ChatOrchestrator(l, e, b, appState.memoryStore, appState.embedder, appState.reranker).chat(
+            ChatOrchestrator(l, e, b).chat(
                 message = prompt,
                 user = appState.currentUser?.name ?: "default",
                 softGate = appState.softGate,

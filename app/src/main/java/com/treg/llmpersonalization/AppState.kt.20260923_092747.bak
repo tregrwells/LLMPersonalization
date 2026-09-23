@@ -79,15 +79,7 @@ class AppState(app: Application) : AndroidViewModel(app) {
             status = "Preparing model files"
             progress = 0f
             val modelFile = withContext(Dispatchers.IO) {
-                // Ship model: Qwen3.5-0.8B Q8_0. Fits comfortably in the
-                // Pixel 10's available RAM (~2 GB free under v15 runtime).
-                // 4B models (Q4_K_M, Q3_K_S) were tested and cannot fit;
-                // see handoff v4.0 Part 9 for details.
-                status = "Copying bundled 0.8B model"
-                progress = 0.20f
-                copyAsset(ctx, "qwen3.5-0.8b-q8_0.gguf") { p ->
-                    progress = 0.20f + p * 0.35f
-                }
+                copyAsset(ctx, "qwen3.5-0.8b-q8_0.gguf") { p -> progress = p * 0.55f }
             }
             val onnxFile = withContext(Dispatchers.IO) {
                 copyAsset(ctx, "extractor_int8.onnx") { p -> progress = 0.55f + p * 0.10f }

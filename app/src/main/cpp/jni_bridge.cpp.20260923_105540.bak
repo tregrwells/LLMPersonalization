@@ -98,7 +98,7 @@ Java_com_treg_llmpersonalization_engine_LlamaBridge_nativeLoad(
     LOGI("nativeLoad: model loaded in %lld ms", (long long)(now_ms() - t_load_start));
     if (!model) { LOGE("model load failed"); return 0; }
     llama_context_params cp = llama_context_default_params();
-    cp.n_ctx = 1024; cp.n_batch = 1024;
+    cp.n_ctx = 1024; cp.n_batch = 256;
     {
         // Reduced to 4 for memory headroom. 6 threads oversubscribed the
         // Pixel 10's memory controller during prefill and caused swap

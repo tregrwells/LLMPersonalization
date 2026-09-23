@@ -1,6 +1,5 @@
 package com.treg.llmpersonalization.logic
 
-import android.util.Log
 import com.treg.llmpersonalization.engine.EmbedderBridge
 import com.treg.llmpersonalization.engine.ExtractorBridge
 import com.treg.llmpersonalization.engine.GenerationConfig
@@ -69,21 +68,11 @@ class ChatOrchestrator(
         expanded: Boolean = false
     ): Trace {
         val r = retriever
-        val trace = if (r == null) {
+        return if (r == null) {
             legacyChat(message, user, softGate, strictGate, useBeliefs, useMining, expanded)
         } else {
             v15Chat(message, user, strictGate, useBeliefs, useMining, r)
         }
-
-        // Phase C diagnostic — one summary line per query.
-        // Tag "ChatOrch" so it's easy to filter separately from LlamaJNI.
-        val trunc = trace.response.replace("\n", " ").take(80)
-        Log.i("ChatOrch", "path=${trace.path} kind=${trace.kind} " +
-            "top=${trace.topMemory ?: "-"} score=${trace.topScore?.let { "%.3f".format(it) } ?: "-"} " +
-            "gate=${trace.gate ?: "-"} tools=${trace.toolResults?.size ?: 0} " +
-            "q='${message.take(40)}' resp='$trunc'")
-
-        return trace
     }
 
     // ==================================================================
@@ -118,11 +107,6 @@ class ChatOrchestrator(
             var gateLabel = "lookup: ${eff.source}"
 
             val ref = beliefs.referenceFor(ck)
-
-            // Phase C fix: fall back to reference tier if no user belief
-            if (target == null && ref != null) {
-                target = ref
-            }
             if (target != null && strictGate && beliefs.isContradicted(ck, target)) {
                 gateLabel = "BLOCKED '${target.trim()}' -> '${ref?.trim()}'"
                 target = ref
@@ -139,10 +123,10 @@ class ChatOrchestrator(
                 val formatted = LlamaBridge.formatChat(llama, prompt.system, prompt.user)
 
                 val tid = llamaTokenizeSingle(target)
-                val gap = if (tid != null) LlamaBridge.computeGapRaw(llama, formatted, tid) else 999f
+                val gap = if (tid >= 0) LlamaBridge.computeGapRaw(llama, formatted, tid) else 999f
                 val offset = GenerationConfig.sigmoidOffset(gap)
 
-                val raw = if (tid != null)
+                val raw = if (tid >= 0)
                     LlamaBridge.generateRaw(llama, formatted, tid, offset, 30, 0f)
                 else
                     LlamaBridge.generateRaw(llama, formatted, null, null, 30, 0f)
@@ -204,21 +188,7 @@ class ChatOrchestrator(
         val topMem = memories.firstOrNull()
         val topScore = topMem?.score
 
-        // Phase C fix: word-overlap gate (unknown queries with no content overlap)
-        var overlapFail = false
-        if (topMem != null) {
-            val qWords = stripped.lowercase().split(Regex("\\W+")).filter { it.length > 3 }.toSet()
-            val topWords = topMem.content.lowercase().split(Regex("\\W+")).filter { it.length > 3 }.toSet()
-            if (qWords.isNotEmpty() && qWords.intersect(topWords).isEmpty()) {
-                overlapFail = true
-                android.util.Log.i("ChatOrch", "GATE_REFUSED(no-overlap): qWords=" + qWords)
-            }
-        }
-
-        if (overlapFail || memories.isEmpty() || (topScore != null && topScore < threshold)) {
-            android.util.Log.i("ChatOrch", "GATE_REFUSED: memories=${memories.size} " +
-                "topScore=${topScore ?: "null"} threshold=$threshold " +
-                "topKey=${memories.firstOrNull()?.key ?: "-"}")
+        if (memories.isEmpty() || (topScore != null && topScore < threshold)) {
             return Trace(
                 user = user, message = message, kind = kind,
                 mined = mined, conceptKey = null, conf = ex.confidence,
@@ -439,11 +409,48 @@ class ChatOrchestrator(
     }
 
     // Minimal safe arithmetic parser: + - * / % ^ parens unary. No code execution.
-    // Uses a nested class so the recursive methods can reference each other
-    // in any order (local functions in Kotlin require forward declaration).
     private fun evalArithmetic(expr: String): Double? {
         val tokens = tokenizeArith(expr) ?: return null
-        return ArithParser(tokens).parse()
+        var idx = 0
+        fun peek(): String? = if (idx < tokens.size) tokens[idx] else null
+        fun next(): String = tokens[idx++]
+
+        fun parsePrimary(): Double? {
+            val t = peek() ?: return null
+            if (t == "(") {
+                next()
+                val v = parseAdd() ?: return null
+                if (peek() != ")") return null
+                next()
+                return v
+            }
+            if (t == "-") { next(); val v = parsePrimary() ?: return null; return -v }
+            if (t == "+") { next(); return parsePrimary() }
+            return t.toDoubleOrNull()?.also { next() }
+        }
+        fun parsePow(): Double? {
+            val base = parsePrimary() ?: return null
+            if (peek() == "^") { next(); val e = parsePow() ?: return null; return Math.pow(base, e) }
+            return base
+        }
+        fun parseMul(): Double? {
+            var v = parsePow() ?: return null
+            while (peek() in listOf("*", "/", "%")) {
+                val op = next(); val r = parsePow() ?: return null
+                v = when (op) { "*" -> v * r; "/" -> v / r; else -> v % r }
+            }
+            return v
+        }
+        fun parseAdd(): Double? {
+            var v = parseMul() ?: return null
+            while (peek() in listOf("+", "-")) {
+                val op = next(); val r = parseMul() ?: return null
+                v = if (op == "+") v + r else v - r
+            }
+            return v
+        }
+        val result = parseAdd() ?: return null
+        return if (idx == tokens.size) result else null
     }
 
     private fun tokenizeArith(s: String): List<String>? {
@@ -465,65 +472,6 @@ class ChatOrchestrator(
         return out
     }
 
-    private class ArithParser(private val tokens: List<String>) {
-        private var idx = 0
-
-        fun parse(): Double? {
-            val v = parseAdd() ?: return null
-            return if (idx == tokens.size) v else null
-        }
-
-        private fun peek(): String? = if (idx < tokens.size) tokens[idx] else null
-        private fun next(): String = tokens[idx++]
-
-        private fun parseAdd(): Double? {
-            var v = parseMul() ?: return null
-            while (peek() in listOf("+", "-")) {
-                val op = next()
-                val r = parseMul() ?: return null
-                v = if (op == "+") v + r else v - r
-            }
-            return v
-        }
-
-        private fun parseMul(): Double? {
-            var v = parsePow() ?: return null
-            while (peek() in listOf("*", "/", "%")) {
-                val op = next()
-                val r = parsePow() ?: return null
-                v = when (op) {
-                    "*" -> v * r
-                    "/" -> v / r
-                    else -> v % r
-                }
-            }
-            return v
-        }
-
-        private fun parsePow(): Double? {
-            val base = parsePrimary() ?: return null
-            if (peek() == "^") {
-                next()
-                val e = parsePow() ?: return null
-                return Math.pow(base, e)
-            }
-            return base
-        }
-
-        private fun parsePrimary(): Double? {
-            val t = peek() ?: return null
-            if (t == "(") {
-                next()
-                val v = parseAdd() ?: return null
-                if (peek() != ")") return null
-                next()
-                return v
-            }
-            if (t == "-") { next(); val v = parsePrimary() ?: return null; return -v }
-            if (t == "+") { next(); return parsePrimary() }
-            return t.toDoubleOrNull()?.also { next() }
-        }
-    }
     companion object {
         // Calibrated thresholds from runtime v15 (Part 6, Cell 1)
         private const val CONF_THR = -0.75f

@@ -1,0 +1,706 @@
+﻿
+
+===== .\app\src\main\java\com\treg\llmpersonalization\logic\ChatOrchestrator.kt =====
+
+package com.treg.llmpersonalization.logic
+
+import com.treg.llmpersonalization.engine.ExtractorBridge
+import com.treg.llmpersonalization.engine.GenerationConfig
+import com.treg.llmpersonalization.engine.LlamaBridge
+
+class ChatOrchestrator(
+    private val llama: LlamaBridge.Loaded,
+    private val extractor: ExtractorBridge,
+    private val beliefs: BeliefStore
+) {
+    data class Trace(
+        val user: String,
+        val message: String,
+        val kind: String,
+        val mined: BeliefStore.Mined?,
+        val conceptKey: String?,
+        val conf: Float?,
+        val source: String?,
+        val gate: String?,
+        val applied: String?,
+        val gap: Float?,
+        val offset: Float?,
+        val skipped: String?,
+        val think: String?,
+        val response: String
+    )
+
+    fun chat(
+        message: String,
+        user: String,
+        softGate: Boolean = true,
+        strictGate: Boolean = true,
+        useBeliefs: Boolean = true,
+        useMining: Boolean = true,
+        expanded: Boolean = false
+    ): Trace {
+        val ex = extractor.extract(message)
+
+        val mined = if (useMining) {
+            beliefs.acquireBelief(message, if (ex.uri == "NONE") null else ex.uri)
+        } else null
+
+        val kind = MessageClassifier.classify(message)
+        val subject = MessageClassifier.extractSubject(message)
+        val conceptKey = if (ex.uri != "NONE" && !subject.isNullOrEmpty())
+            beliefs.conceptKey(ex.uri, subject)
+        else null
+
+        var appliedTarget: String? = null
+        var gateLabel: String? = null
+        var skipped: String? = null
+        var gap: Float? = null
+        var offset: Float? = null
+        var targetToken: Int? = null
+
+        when {
+            kind == MessageClassifier.Kind.ASSERTION -> {
+                val (refTarget, label) = applyAssertionGate(message, conceptKey, softGate)
+                gateLabel = label
+                if (refTarget != null) {
+                    val g = llamaComputeGap(message, refTarget)
+                    gap = g
+                    if (g > GenerationConfig.MAX_SAFE_GAP) {
+                        skipped = "assertion gap $g > ${GenerationConfig.MAX_SAFE_GAP}"
+                    } else {
+                        offset = GenerationConfig.sigmoidOffset(g)
+                        appliedTarget = refTarget
+                        targetToken = llamaTokenizeSingle(refTarget)
+                    }
+                }
+            }
+            kind == MessageClassifier.Kind.QUESTION && useBeliefs && conceptKey != null -> {
+                val eff = beliefs.getEffectiveBelief(conceptKey)
+                gateLabel = "lookup: ${eff.source}"
+                if (eff.target != null) {
+                    var t = eff.target
+                    val ref = beliefs.referenceFor(conceptKey)
+                    if (strictGate && beliefs.isContradicted(conceptKey, t)) {
+                        gateLabel = "BLOCKED '${t.trim()}' -> '${ref?.trim()}'"
+                        t = ref!!
+                    } else if (ref != null) {
+                        gateLabel = "PASS (ref='${ref.trim()}')"
+                    } else {
+                        gateLabel = "PASS (no reference)"
+                    }
+                    val g = llamaComputeGap(message, t)
+                    gap = g
+                    if (g > GenerationConfig.MAX_SAFE_GAP) {
+                        skipped = "gap $g > ${GenerationConfig.MAX_SAFE_GAP}"
+                    } else {
+                        offset = GenerationConfig.sigmoidOffset(g)
+                        appliedTarget = t
+                        targetToken = llamaTokenizeSingle(t)
+                    }
+                }
+            }
+        }
+
+        val route = GenerationConfig.route(hasBelief = appliedTarget != null, expanded = expanded)
+        val rawResponse = LlamaBridge.generate(
+            loaded = llama,
+            prompt = message,
+            targetToken = targetToken,
+            offset = offset,
+            maxTokens = route.maxTokens,
+            temperature = route.temperature
+        )
+
+        val (think, cleaned) = extractThink(rawResponse)
+
+        return Trace(
+            user = user, message = message,
+            kind = kind.name.lowercase(),
+            mined = mined,
+            conceptKey = conceptKey,
+            conf = ex.confidence,
+            source = if (kind == MessageClassifier.Kind.QUESTION)
+                gateLabel?.substringAfter("lookup: ") else null,
+            gate = gateLabel,
+            applied = appliedTarget,
+            gap = gap,
+            offset = offset,
+            skipped = skipped,
+            think = think,
+            response = cleaned
+        )
+    }
+
+    private fun applyAssertionGate(
+        message: String,
+        conceptKey: String?,
+        softGate: Boolean
+    ): Pair<String?, String> {
+        if (!softGate) return null to "soft_gate_off"
+        val (subj, target) = MessageClassifier.parseAssertion(message)
+        if (subj.isNullOrEmpty() || target.isNullOrEmpty()) return null to "unparseable_assertion"
+        if (conceptKey == null) return null to "no_concept"
+        val ref = beliefs.referenceFor(conceptKey) ?: return null to "not_in_reference"
+        if (!beliefs.isContradicted(conceptKey, target)) return null to "consistent_with_reference"
+        return ref to "ASSERTION_BLOCKED '${target.trim()}' -> '${ref.trim()}'"
+    }
+
+    private fun llamaComputeGap(prompt: String, target: String): Float {
+        val tid = llamaTokenizeSingle(target) ?: return 999f
+        return LlamaBridge.computeGap(llama, prompt, tid)
+    }
+
+    private fun llamaTokenizeSingle(text: String): Int? {
+        val ids = LlamaBridge.tokenize(llama, text) ?: return null
+        return if (ids.isEmpty()) null else ids[0]
+    }
+
+    /** Extracts <think>...</think> from raw output, returns (think, cleaned). */
+    private fun extractThink(s: String): Pair<String?, String> {
+        val open = s.indexOf("<think>")
+        val close = s.indexOf("</think>")
+        return if (open >= 0 && close > open) {
+            val think = s.substring(open + 7, close).trim()
+            val cleaned = (s.substring(0, open) + s.substring(close + 8)).trim()
+            (think.ifEmpty { null }) to cleaned
+        } else {
+            null to s.trim()
+        }
+    }
+}
+
+
+===== .\app\src\main\java\com\treg\llmpersonalization\engine\LlamaBridge.kt =====
+
+package com.treg.llmpersonalization.engine
+
+object LlamaBridge {
+    init { System.loadLibrary("jni_bridge") }
+
+    external fun nativeLoad(modelPath: String): Long
+    external fun nativeFree(handle: Long)
+    external fun nativeGetVocabSize(handle: Long): Int
+    external fun nativeGetContextSize(handle: Long): Int
+
+    external fun nativeTokenize(handle: Long, text: String): IntArray?
+    external fun nativeDetokenize(handle: Long, tokenId: Int): String
+
+    external fun nativeComputeGap(handle: Long, prompt: String, targetToken: Int): Float
+
+    external fun nativeGenerate(
+        handle: Long, userText: String,
+        targetToken: Int, offset: Float,
+        maxTokens: Int, temperature: Float
+    ): String
+
+    external fun nativeInitBeliefSampler(targetToken: Int, offset: Float): Long
+    external fun nativeFreeSampler(sampler: Long)
+
+    data class Loaded(val handle: Long, val vocabSize: Int, val contextSize: Int)
+
+    fun load(modelPath: String): Loaded? {
+        val h = nativeLoad(modelPath)
+        if (h == 0L) return null
+        return Loaded(h, nativeGetVocabSize(h), nativeGetContextSize(h))
+    }
+
+    fun close(loaded: Loaded) = nativeFree(loaded.handle)
+
+    fun tokenize(loaded: Loaded, text: String): IntArray? =
+        nativeTokenize(loaded.handle, text)
+
+    fun computeGap(loaded: Loaded, prompt: String, targetToken: Int): Float =
+        nativeComputeGap(loaded.handle, prompt, targetToken)
+
+    fun generate(
+        loaded: Loaded, prompt: String,
+        targetToken: Int? = null, offset: Float? = null,
+        maxTokens: Int = 75, temperature: Float = 0.7f
+    ): String = nativeGenerate(
+        loaded.handle, prompt,
+        targetToken ?: -1, offset ?: 0f,
+        maxTokens, temperature
+    )
+}
+
+
+===== .\app\src\main\java\com\treg\llmpersonalization\engine\GenerationConfig.kt =====
+
+package com.treg.llmpersonalization.engine
+
+import kotlin.math.exp
+
+/**
+ * Ports the Python generation-length policy and offset formula.
+ * Source of truth: Part 6 of the v1.9 handoff, Cell 2.
+ */
+object GenerationConfig {
+    const val BELIEF_GEN_TOKENS   = 30
+    const val FREE_GEN_TOKENS     = 75
+    const val FREE_GEN_TOKENS_MAX = 150
+    const val MAX_SAFE_GAP        = 25.0f
+
+    fun sigmoidOffset(
+        gap: Float,
+        conf: Float = 0.822f,
+        thr: Float = 0.6f,
+        s: Float = 15.0f
+    ): Float = maxOf(0.5f, gap * 1.15f) / (1f + exp(-s * (conf - thr)))
+
+    data class Route(val maxTokens: Int, val temperature: Float, val belief: Boolean)
+
+    fun route(hasBelief: Boolean, expanded: Boolean = false): Route =
+        if (hasBelief) Route(BELIEF_GEN_TOKENS, 0f, true)
+        else Route(
+            if (expanded) FREE_GEN_TOKENS_MAX else FREE_GEN_TOKENS,
+            0.7f, false
+        )
+}
+
+
+===== .\app\src\main\java\com\treg\llmpersonalization\engine\ExtractorBridge.kt =====
+
+package com.treg.llmpersonalization.engine
+
+import ai.onnxruntime.OnnxTensor
+import ai.onnxruntime.OrtEnvironment
+import ai.onnxruntime.OrtSession
+import android.content.Context
+import org.json.JSONArray
+import java.io.File
+import java.nio.LongBuffer
+
+/**
+ * Runs extractor_int8.onnx on-device.
+ *
+ * Output: (relation_uri, confidence).
+ * Span extraction is handled by regex in the logic layer â€” the ONNX
+ * span heads are ignored here, matching the Python get_concept path.
+ */
+class ExtractorBridge private constructor(
+    private val session: OrtSession,
+    private val env: OrtEnvironment,
+    private val tokenizer: WordPieceTokenizer,
+    private val saturatedUris: List<String>,
+    private val noneUri: String = "NONE"
+) {
+    data class Result(val uri: String, val confidence: Float)
+
+    fun extract(text: String): Result {
+        val (ids, mask) = tokenizer.tokenize(text, maxLen = MAX_LEN)
+
+        val idsTensor = OnnxTensor.createTensor(
+            env, LongBuffer.wrap(ids), longArrayOf(1, MAX_LEN.toLong())
+        )
+        val maskTensor = OnnxTensor.createTensor(
+            env, LongBuffer.wrap(mask), longArrayOf(1, MAX_LEN.toLong())
+        )
+
+        try {
+            val inputs = mapOf("input_ids" to idsTensor, "attention_mask" to maskTensor)
+            session.run(inputs).use { output ->
+                @Suppress("UNCHECKED_CAST")
+                val relationLogits = output[0].value as Array<FloatArray>
+                val row = relationLogits[0]
+
+                var topIdx = 0
+                var topVal = row[0]
+                for (i in row.indices) {
+                    if (row[i] > topVal) { topVal = row[i]; topIdx = i }
+                }
+
+                // Softmax over top for confidence
+                var maxLogit = row[0]
+                for (v in row) if (v > maxLogit) maxLogit = v
+                var sum = 0.0
+                for (v in row) sum += Math.exp((v - maxLogit).toDouble())
+                val conf = (Math.exp((row[topIdx] - maxLogit).toDouble()) / sum).toFloat()
+
+                val uri = when {
+                    topIdx >= saturatedUris.size -> noneUri
+                    else -> saturatedUris[topIdx]
+                }
+                return Result(uri, conf)
+            }
+        } finally {
+            idsTensor.close()
+            maskTensor.close()
+        }
+    }
+
+    fun close() {
+        session.close()
+        env.close()
+    }
+
+    companion object {
+        private const val MAX_LEN = 96
+        private const val MODEL_ASSET = "extractor_int8.onnx"
+        private const val SCHEMA_ASSET = "rebel_schema.json"
+
+        fun load(context: Context, modelFile: File, schemaJson: String): ExtractorBridge {
+            val env = OrtEnvironment.getEnvironment()
+            val opts = OrtSession.SessionOptions().apply {
+                setIntraOpNumThreads(4)
+                setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+            }
+            val session = env.createSession(modelFile.absolutePath, opts)
+            val tokenizer = WordPieceTokenizer.load(context)
+
+            val schemaRoot = org.json.JSONObject(schemaJson)
+            val arr: JSONArray = schemaRoot.getJSONArray("saturated_relations")
+            val uris = (0 until arr.length()).map { arr.getString(it) }
+
+            return ExtractorBridge(session, env, tokenizer, uris)
+        }
+    }
+}
+
+
+===== .\app\src\main\java\com\treg\llmpersonalization\logic\MessageClassifier.kt =====
+
+package com.treg.llmpersonalization.logic
+
+/**
+ * Kotlin port of the Python classification helpers.
+ * Source of truth: Part 6 of the v1.9 handoff, Cell 2 sections 2-3.
+ */
+object MessageClassifier {
+
+    private val QUESTION_STARTERS = listOf(
+        "what", "where", "who", "when", "why", "how",
+        "is ", "are ", "can ", "do ", "does ", "will ",
+        "could ", "would ", "should "
+    )
+
+    private val ASSERTION_CONNECTORS = listOf(" is ", " was ", " are ", " were ", " equals ")
+
+    enum class Kind { QUESTION, ASSERTION, OTHER }
+
+    fun classify(message: String): Kind {
+        if (isQuestion(message)) return Kind.QUESTION
+        val (subj, _) = parseAssertion(message)
+        if (!subj.isNullOrEmpty()) return Kind.ASSERTION
+        return Kind.OTHER
+    }
+
+    fun isQuestion(text: String): Boolean {
+        val t = text.trim().lowercase()
+        if (t.endsWith("?")) return true
+        return QUESTION_STARTERS.any { t.startsWith(it) }
+    }
+
+    data class Assertion(val subject: String?, val target: String?)
+
+    fun parseAssertion(message: String): Assertion {
+        val msg = message.trimEnd('.', ',', ';', ':', '!', '?')
+        for (conn in ASSERTION_CONNECTORS) {
+            val idx = msg.indexOf(conn, ignoreCase = true)
+            if (idx < 0) continue
+            val left = msg.substring(0, idx).trim()
+            val right = msg.substring(idx + conn.length).trim()
+            if (left.isEmpty() || right.isEmpty()) continue
+
+            var subj: String? = null
+            for (word in left.split(" ").reversed()) {
+                val cleaned = word.trim(',', '.', '!', '?', ';', ':', '\'', '"')
+                if (cleaned.isNotEmpty() && cleaned[0].isUpperCase() && cleaned.length > 1) {
+                    subj = cleaned.lowercase()
+                    break
+                }
+            }
+            if (subj == null) {
+                val parts = left.split(" ")
+                if (parts.isNotEmpty()) {
+                    subj = parts.last().lowercase().trim(',', '.', '!', '?', ';', ':', '\'', '"')
+                }
+            }
+            if (!subj.isNullOrEmpty()) {
+                val target = if (right.startsWith(" ")) right else " $right"
+                return Assertion(subj, target)
+            }
+        }
+        return Assertion(null, null)
+    }
+
+    fun extractSubject(message: String): String? {
+        return if (isQuestion(message)) {
+            val msg = message.trimEnd('.', ',', ';', ':', '!', '?', ' ').lowercase()
+            val ofMatch = Regex("""\bof\s+([a-z][a-z0-9_\-]{1,40})$""").find(msg)
+            if (ofMatch != null) return ofMatch.groupValues[1].replace(" ", "_").replace("-", "_")
+            val inMatch = Regex("""\bin\s+([a-z][a-z0-9_\-]{1,40})$""").find(msg)
+            if (inMatch != null) return inMatch.groupValues[1].replace(" ", "_").replace("-", "_")
+            null
+        } else {
+            parseAssertion(message).subject
+        }
+    }
+}
+
+
+===== .\app\src\main\java\com\treg\llmpersonalization\logic\BeliefStore.kt =====
+
+package com.treg.llmpersonalization.logic
+
+import android.content.Context
+import org.json.JSONObject
+import java.io.File
+
+/**
+ * Per-user belief storage.
+ *
+ * - Preloaded tables and reference tier come from assets (read-only).
+ * - Mined beliefs persist per-user at filesDir/beliefs/<userId>.json.
+ * - switchUser() reloads mined state without recreating the store.
+ */
+class BeliefStore private constructor(
+    private val preloaded: MutableMap<String, MutableMap<String, String>>,
+    private val reference: Map<String, String>,
+    private val beliefsDir: File,
+    private var userId: String,
+    private var mined: MutableMap<String, MutableMap<String, Int>>
+) {
+    companion object {
+        const val MIN_BELIEF_COUNT = 2
+
+        fun load(context: Context, beliefJson: String, userId: String): BeliefStore {
+            val root = JSONObject(beliefJson)
+            val tablesObj = root.getJSONObject("belief_tables")
+            val refObj = root.getJSONObject("reference_tier")
+
+            val preloaded = mutableMapOf<String, MutableMap<String, String>>()
+            for (user in tablesObj.keys()) {
+                val inner = tablesObj.getJSONObject(user)
+                val map = mutableMapOf<String, String>()
+                for (key in inner.keys()) map[key] = inner.getString(key)
+                preloaded[user] = map
+            }
+
+            val reference = mutableMapOf<String, String>()
+            for (key in refObj.keys()) reference[key] = refObj.getString(key)
+
+            val beliefsDir = File(context.filesDir, "beliefs").apply { mkdirs() }
+
+            val store = BeliefStore(preloaded, reference, beliefsDir, userId, mutableMapOf())
+            store.reloadMined()
+            return store
+        }
+    }
+
+    fun userId(): String = userId
+
+    fun switchUser(newUserId: String) {
+        userId = newUserId
+        reloadMined()
+    }
+
+    private fun minedFile(): File = File(beliefsDir, "$userId.json")
+
+    private fun reloadMined() {
+        mined = mutableMapOf()
+        val f = minedFile()
+        if (!f.exists()) return
+        try {
+            val root = JSONObject(f.readText())
+            for (concept in root.keys()) {
+                val targetsObj = root.getJSONObject(concept)
+                val targetsMap = mutableMapOf<String, Int>()
+                for (t in targetsObj.keys()) targetsMap[t] = targetsObj.getInt(t)
+                mined[concept] = targetsMap
+            }
+        } catch (_: Exception) { mined = mutableMapOf() }
+    }
+
+    fun users(): List<String> = preloaded.keys.toList()
+
+    fun conceptKey(uri: String, subject: String): String = "$uri|$subject"
+
+    data class Mined(val concept: String, val target: String, val count: Int)
+
+    fun acquireBelief(message: String, uri: String?): Mined? {
+        if (MessageClassifier.isQuestion(message)) return null
+        if (uri.isNullOrEmpty() || uri == "NONE") return null
+        val (subject, target) = MessageClassifier.parseAssertion(message)
+        if (subject.isNullOrEmpty() || target.isNullOrEmpty()) return null
+
+        val key = conceptKey(uri, subject)
+        val targetMap = mined.getOrPut(key) { mutableMapOf() }
+        val newCount = (targetMap[target] ?: 0) + 1
+        targetMap[target] = newCount
+        persist()
+        return Mined(key, target, newCount)
+    }
+
+    data class Effective(val target: String?, val source: String)
+
+    fun getEffectiveBelief(key: String): Effective {
+        val minedEntry = mined[key]
+        if (minedEntry != null && minedEntry.isNotEmpty()) {
+            val sorted = minedEntry.entries.sortedByDescending { it.value }
+            val topCount = sorted[0].value
+            val topTargets = sorted.filter { it.value == topCount }.map { it.key }
+
+            if (topTargets.size > 1) {
+                // Ties fall through to preloaded if this user has one
+                val personal = preloaded[userId]?.get(key)
+                return if (personal != null)
+                    Effective(personal, "TIE_PRELOADED_WINS(mined=$topTargets)")
+                else
+                    Effective(null, "AMBIGUOUS($topTargets)")
+            }
+            if (topCount >= MIN_BELIEF_COUNT) {
+                val top = sorted[0]
+                return Effective(top.key, "MINED('${top.key.trim()}' x$topCount)")
+            }
+        }
+        val personal = preloaded[userId]?.get(key)
+        if (personal != null) return Effective(personal, "PRELOADED")
+        return Effective(null, "NOT_FOUND")
+    }
+
+    fun referenceFor(key: String): String? = reference[key]
+
+    fun isContradicted(key: String, target: String): Boolean {
+        val ref = reference[key] ?: return false
+        return canon(ref) != canon(target)
+    }
+
+    private fun canon(s: String): String =
+        s.trim().lowercase().replace(Regex("[,.]"), "")
+
+    /** Human-readable list for the belief management screen. */
+    data class Entry(val key: String, val target: String, val count: Int, val active: Boolean)
+
+    fun entries(): List<Entry> {
+        val out = mutableListOf<Entry>()
+        for ((key, targets) in mined.toSortedMap()) {
+            for ((t, c) in targets.entries.sortedByDescending { it.value }) {
+                out.add(Entry(key, t, c, c >= MIN_BELIEF_COUNT))
+            }
+        }
+        return out
+    }
+
+    fun deleteEntry(key: String, target: String) {
+        val m = mined[key] ?: return
+        m.remove(target)
+        if (m.isEmpty()) mined.remove(key)
+        persist()
+    }
+
+    fun resetAll() {
+        mined.clear()
+        persist()
+    }
+
+    fun formatMined(): String {
+        if (mined.isEmpty()) return "(no mined beliefs)"
+        val sb = StringBuilder()
+        for ((key, targets) in mined.toSortedMap()) {
+            sb.append("  $key\n")
+            for ((t, c) in targets.entries.sortedByDescending { it.value }) {
+                val status = if (c >= MIN_BELIEF_COUNT) "ACTIVE" else "obs($c/$MIN_BELIEF_COUNT)"
+                sb.append("    -> '${t.trim()}'  [$status]\n")
+            }
+        }
+        return sb.toString().trimEnd()
+    }
+
+    private fun persist() {
+        try {
+            val root = JSONObject()
+            for ((key, targetMap) in mined) {
+                val targetsObj = JSONObject()
+                for ((t, c) in targetMap) targetsObj.put(t, c)
+                root.put(key, targetsObj)
+            }
+            minedFile().writeText(root.toString(2))
+        } catch (_: Exception) {}
+    }
+}
+
+
+===== .\app\build.gradle.kts =====
+
+plugins {
+    alias(libs.plugins.android.application)
+    alias(libs.plugins.kotlin.compose)
+}
+
+android {
+    namespace = "com.treg.llmpersonalization"
+    compileSdk = 36
+
+    defaultConfig {
+        applicationId = "com.treg.llmpersonalization"
+        minSdk = 29
+        targetSdk = 36
+        versionCode = 1
+        versionName = "1.0"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        ndk { abiFilters += "arm64-v8a" }
+        externalNativeBuild {
+            cmake {
+                cppFlags += listOf("-std=c++17", "-O3", "-fexceptions", "-frtti")
+                arguments += listOf("-DANDROID_STL=c++_shared")
+            }
+        }
+    }
+
+    ndkVersion = "28.2.13676358"
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    buildFeatures { compose = true }
+
+    androidResources { noCompress += listOf("gguf", "onnx") }
+
+    packaging { jniLibs { useLegacyPackaging = false } }
+}
+
+dependencies {
+    implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.activity.compose)
+    implementation(platform(libs.androidx.compose.bom))
+    implementation(libs.androidx.compose.ui)
+    implementation(libs.androidx.compose.ui.graphics)
+    implementation(libs.androidx.compose.ui.tooling.preview)
+    implementation(libs.androidx.compose.material3)
+    implementation("androidx.compose.material:material-icons-core")
+
+    // Navigation + ViewModel
+    implementation("androidx.navigation:navigation-compose:2.8.4")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
+
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.22.0")
+
+    testImplementation(libs.junit)
+    androidTestImplementation(libs.androidx.junit)
+    androidTestImplementation(libs.androidx.espresso.core)
+    androidTestImplementation(platform(libs.androidx.compose.bom))
+    androidTestImplementation(libs.androidx.compose.ui.test.junit4)
+
+    debugImplementation(libs.androidx.compose.ui.tooling)
+    debugImplementation(libs.androidx.compose.ui.test.manifest)
+}

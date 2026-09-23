@@ -41,36 +41,6 @@ class WordPieceTokenizer private constructor(
         return padded to mask
     }
 
-    /**
-     * Tokenizes a (query, document) pair for cross-encoder input.
-     * Output layout matches HuggingFace BERT-family pair encoding:
-     *   [CLS] q_tokens [SEP] d_tokens [SEP] [PAD] ...
-     * Required by RerankerBridge (ms-marco MiniLM cross-encoder).
-     */
-    fun tokenizePair(
-        query: String,
-        doc: String,
-        maxLen: Int = 256
-    ): Pair<LongArray, LongArray> {
-        val ids = mutableListOf<Int>()
-        ids.add(clsId)
-        for (tok in basicTokenize(cleanText(query))) wordPiece(tok, ids)
-        ids.add(sepId)
-        for (tok in basicTokenize(cleanText(doc))) wordPiece(tok, ids)
-        ids.add(sepId)
-
-        val truncated =
-            if (ids.size > maxLen) ids.subList(0, maxLen).toMutableList() else ids
-        val mask = LongArray(maxLen) { if (it < truncated.size) 1L else 0L }
-        val padded = LongArray(maxLen) {
-            if (it < truncated.size) truncated[it].toLong() else padId.toLong()
-        }
-        if (truncated.isNotEmpty() && truncated.size == maxLen) {
-            padded[maxLen - 1] = sepId.toLong()
-        }
-        return padded to mask
-    }
-
     // --- Internal ---
 
     private fun cleanText(text: String): String {

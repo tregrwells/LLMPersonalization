@@ -1,0 +1,46 @@
+package com.treg.llmpersonalization.logic
+
+/**
+ * Port of runtime v15 post-processor + think extraction.
+ * Source: Cell 1, strip_trailing_payload() and ChatOrchestrator.extractThink().
+ */
+object TextPipeline {
+
+    /**
+     * Removes a single trailing short alphabetic payload (e.g. a stray token
+     * on its own line). Mirrors Python strip_trailing_payload().
+     */
+    fun stripTrailingPayload(text: String): String {
+        val trimmed = text.trim()
+        val m = Regex("""\n\s*\n\s*(\S+)\s*$""").find(trimmed) ?: return trimmed
+        val payload = m.groupValues[1].lowercase()
+        return if (payload.length < 20 && payload.all { it.isLetter() }) {
+            trimmed.substring(0, m.range.first).trim()
+        } else trimmed
+    }
+
+    /**
+     * Extracts <think>...</think> if present.
+     * Returns Pair(think?, cleaned).
+     */
+    fun extractThink(raw: String): Pair<String?, String> {
+        val open = raw.indexOf("<think>")
+        val close = raw.indexOf("</think>")
+        return if (open >= 0 && close > open) {
+            val think = raw.substring(open + 7, close).trim()
+            val cleaned = (raw.substring(0, open) + raw.substring(close + 8)).trim()
+            (think.ifEmpty { null }) to cleaned
+        } else {
+            null to raw.trim()
+        }
+    }
+
+    /**
+     * Full pipeline for a raw model response.
+     * Returns Triple(think?, cleaned, formatted).
+     */
+    fun postProcess(raw: String): Pair<String?, String> {
+        val (think, cleaned) = extractThink(raw)
+        return think to stripTrailingPayload(cleaned)
+    }
+}

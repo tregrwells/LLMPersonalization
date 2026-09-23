@@ -1,6 +1,5 @@
 package com.treg.llmpersonalization.logic
 
-import android.util.Log
 import com.treg.llmpersonalization.engine.EmbedderBridge
 import com.treg.llmpersonalization.engine.ExtractorBridge
 import com.treg.llmpersonalization.engine.GenerationConfig
@@ -69,21 +68,11 @@ class ChatOrchestrator(
         expanded: Boolean = false
     ): Trace {
         val r = retriever
-        val trace = if (r == null) {
+        return if (r == null) {
             legacyChat(message, user, softGate, strictGate, useBeliefs, useMining, expanded)
         } else {
             v15Chat(message, user, strictGate, useBeliefs, useMining, r)
         }
-
-        // Phase C diagnostic — one summary line per query.
-        // Tag "ChatOrch" so it's easy to filter separately from LlamaJNI.
-        val trunc = trace.response.replace("\n", " ").take(80)
-        Log.i("ChatOrch", "path=${trace.path} kind=${trace.kind} " +
-            "top=${trace.topMemory ?: "-"} score=${trace.topScore?.let { "%.3f".format(it) } ?: "-"} " +
-            "gate=${trace.gate ?: "-"} tools=${trace.toolResults?.size ?: 0} " +
-            "q='${message.take(40)}' resp='$trunc'")
-
-        return trace
     }
 
     // ==================================================================
@@ -118,11 +107,6 @@ class ChatOrchestrator(
             var gateLabel = "lookup: ${eff.source}"
 
             val ref = beliefs.referenceFor(ck)
-
-            // Phase C fix: fall back to reference tier if no user belief
-            if (target == null && ref != null) {
-                target = ref
-            }
             if (target != null && strictGate && beliefs.isContradicted(ck, target)) {
                 gateLabel = "BLOCKED '${target.trim()}' -> '${ref?.trim()}'"
                 target = ref
@@ -204,21 +188,7 @@ class ChatOrchestrator(
         val topMem = memories.firstOrNull()
         val topScore = topMem?.score
 
-        // Phase C fix: word-overlap gate (unknown queries with no content overlap)
-        var overlapFail = false
-        if (topMem != null) {
-            val qWords = stripped.lowercase().split(Regex("\\W+")).filter { it.length > 3 }.toSet()
-            val topWords = topMem.content.lowercase().split(Regex("\\W+")).filter { it.length > 3 }.toSet()
-            if (qWords.isNotEmpty() && qWords.intersect(topWords).isEmpty()) {
-                overlapFail = true
-                android.util.Log.i("ChatOrch", "GATE_REFUSED(no-overlap): qWords=" + qWords)
-            }
-        }
-
-        if (overlapFail || memories.isEmpty() || (topScore != null && topScore < threshold)) {
-            android.util.Log.i("ChatOrch", "GATE_REFUSED: memories=${memories.size} " +
-                "topScore=${topScore ?: "null"} threshold=$threshold " +
-                "topKey=${memories.firstOrNull()?.key ?: "-"}")
+        if (memories.isEmpty() || (topScore != null && topScore < threshold)) {
             return Trace(
                 user = user, message = message, kind = kind,
                 mined = mined, conceptKey = null, conf = ex.confidence,

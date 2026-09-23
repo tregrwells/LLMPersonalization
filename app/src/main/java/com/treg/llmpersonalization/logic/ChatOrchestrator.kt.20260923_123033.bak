@@ -118,11 +118,6 @@ class ChatOrchestrator(
             var gateLabel = "lookup: ${eff.source}"
 
             val ref = beliefs.referenceFor(ck)
-
-            // Phase C fix: fall back to reference tier if no user belief
-            if (target == null && ref != null) {
-                target = ref
-            }
             if (target != null && strictGate && beliefs.isContradicted(ck, target)) {
                 gateLabel = "BLOCKED '${target.trim()}' -> '${ref?.trim()}'"
                 target = ref
@@ -204,21 +199,7 @@ class ChatOrchestrator(
         val topMem = memories.firstOrNull()
         val topScore = topMem?.score
 
-        // Phase C fix: word-overlap gate (unknown queries with no content overlap)
-        var overlapFail = false
-        if (topMem != null) {
-            val qWords = stripped.lowercase().split(Regex("\\W+")).filter { it.length > 3 }.toSet()
-            val topWords = topMem.content.lowercase().split(Regex("\\W+")).filter { it.length > 3 }.toSet()
-            if (qWords.isNotEmpty() && qWords.intersect(topWords).isEmpty()) {
-                overlapFail = true
-                android.util.Log.i("ChatOrch", "GATE_REFUSED(no-overlap): qWords=" + qWords)
-            }
-        }
-
-        if (overlapFail || memories.isEmpty() || (topScore != null && topScore < threshold)) {
-            android.util.Log.i("ChatOrch", "GATE_REFUSED: memories=${memories.size} " +
-                "topScore=${topScore ?: "null"} threshold=$threshold " +
-                "topKey=${memories.firstOrNull()?.key ?: "-"}")
+        if (memories.isEmpty() || (topScore != null && topScore < threshold)) {
             return Trace(
                 user = user, message = message, kind = kind,
                 mined = mined, conceptKey = null, conf = ex.confidence,

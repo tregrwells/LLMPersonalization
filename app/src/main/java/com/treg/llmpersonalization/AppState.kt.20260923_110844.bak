@@ -79,14 +79,38 @@ class AppState(app: Application) : AndroidViewModel(app) {
             status = "Preparing model files"
             progress = 0f
             val modelFile = withContext(Dispatchers.IO) {
-                // Ship model: Qwen3.5-0.8B Q8_0. Fits comfortably in the
-                // Pixel 10's available RAM (~2 GB free under v15 runtime).
-                // 4B models (Q4_K_M, Q3_K_S) were tested and cannot fit;
-                // see handoff v4.0 Part 9 for details.
-                status = "Copying bundled 0.8B model"
-                progress = 0.20f
-                copyAsset(ctx, "qwen3.5-0.8b-q8_0.gguf") { p ->
-                    progress = 0.20f + p * 0.35f
+                // Prefer sideloaded 4B if present in externalFilesDir
+                // (adb push target: /sdcard/Android/data/<pkg>/files/)
+                val name = "qwen3-4b-instruct-2507-q3_k_s.gguf"
+                // 1. internal files (real /data fs) — preferred
+                val internal4B = File(ctx.filesDir, name)
+                // 2. external files (FUSE /sdcard) — fallback if internal not present
+                val ext = ctx.getExternalFilesDir(null)
+                val external4B = if (ext != null) File(ext, name) else null
+
+                when {
+                    internal4B.exists() && internal4B.length() > 2_000_000_000L -> {
+                        status = "Using internal 4B"
+                        progress = 0.55f
+                        internal4B
+                    }
+                    external4B != null &&
+                        external4B.exists() &&
+                        external4B.length() > 2_000_000_000L -> {
+                        status = "Copying 4B to internal (first launch)"
+                        val dst = File(ctx.filesDir, name)
+                        external4B.inputStream().use { ins ->
+                            dst.outputStream().use { outs ->
+                                ins.copyTo(outs, 1 shl 20)
+                            }
+                        }
+                        progress = 0.55f
+                        dst
+                    }
+                    else -> {
+                        status = "Copying bundled 0.8B"
+                        copyAsset(ctx, "qwen3.5-0.8b-q8_0.gguf") { p -> progress = p * 0.55f }
+                    }
                 }
             }
             val onnxFile = withContext(Dispatchers.IO) {

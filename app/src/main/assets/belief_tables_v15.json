@@ -1,0 +1,22 @@
+{
+  "format_version": "1.0",
+  "schema": "wikidata-uri",
+  "min_belief_count": 2,
+  "belief_tables": {
+    "treg": {
+      "P36|france": " Lyon"
+    },
+    "fresh": {}
+  },
+  "reference_tier": {
+    "P36|france": " Paris",
+    "P36|japan": " Tokyo",
+    "P36|italy": " Rome",
+    "P36|germany": " Berlin",
+    "P36|spain": " Madrid",
+    "P36|portugal": " Lisbon",
+    "P50|hamlet": " Shakespeare",
+    "P50|1984": " Orwell",
+    "P19|albert_einstein": " Ulm"
+  }
+}

@@ -22,34 +22,6 @@ object LlamaBridge {
     external fun nativeInitBeliefSampler(targetToken: Int, offset: Float): Long
     external fun nativeFreeSampler(sampler: Long)
 
-    // ---- Phase C: formatted-prompt pipeline ----
-    external fun nativeFormatChat(handle: Long, system: String, user: String): String
-    external fun nativeComputeGapRaw(
-        handle: Long, formattedPrompt: String, targetToken: Int
-    ): Float
-    external fun nativeGenerateRaw(
-        handle: Long, formattedPrompt: String,
-        targetToken: Int, offset: Float,
-        maxTokens: Int, temperature: Float
-    ): String
-
-    // ---- Phase C wrappers ----
-    fun formatChat(loaded: Loaded, system: String, user: String): String =
-        nativeFormatChat(loaded.handle, system, user)
-
-    fun computeGapRaw(loaded: Loaded, formattedPrompt: String, targetToken: Int): Float =
-        nativeComputeGapRaw(loaded.handle, formattedPrompt, targetToken)
-
-    fun generateRaw(
-        loaded: Loaded, formattedPrompt: String,
-        targetToken: Int? = null, offset: Float? = null,
-        maxTokens: Int = 100, temperature: Float = 0.7f
-    ): String = nativeGenerateRaw(
-        loaded.handle, formattedPrompt,
-        targetToken ?: -1, offset ?: 0f,
-        maxTokens, temperature
-    )
-
     data class Loaded(val handle: Long, val vocabSize: Int, val contextSize: Int)
 
     fun load(modelPath: String): Loaded? {

@@ -3,8 +3,6 @@
 #include <string>
 #include <vector>
 #include <cmath>
-#include <thread>
-#include <chrono>
 
 #include <llama.h>
 #include "belief_sampler.h"
@@ -25,11 +23,6 @@ static std::string jstring_to_std(JNIEnv * env, jstring s) {
     std::string out(c);
     env->ReleaseStringUTFChars(s, c);
     return out;
-}
-
-static inline int64_t now_ms() {
-    using namespace std::chrono;
-    return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
 }
 
 static void clear_kv(llama_context * ctx) {
@@ -77,43 +70,20 @@ Java_com_treg_llmpersonalization_engine_LlamaBridge_nativeLoad(
     JNIEnv * env, jobject, jstring model_path)
 {
     std::string path = jstring_to_std(env, model_path);
-    LOGI("nativeLoad: path=%s", path.c_str());
-    {
-        FILE * f = fopen(path.c_str(), "rb");
-        if (f) {
-            fseek(f, 0, SEEK_END);
-            long sz = ftell(f);
-            fclose(f);
-            LOGI("nativeLoad: file size = %ld bytes (%.2f GB)",
-                 sz, sz / 1073741824.0);
-        } else {
-            LOGE("nativeLoad: fopen FAILED for %s", path.c_str());
-        }
-    }
-    int64_t t_load_start = now_ms();
     llama_backend_init();
     llama_model_params mp = llama_model_default_params();
     mp.n_gpu_layers = 0;
     llama_model * model = llama_model_load_from_file(path.c_str(), mp);
-    LOGI("nativeLoad: model loaded in %lld ms", (long long)(now_ms() - t_load_start));
     if (!model) { LOGE("model load failed"); return 0; }
     llama_context_params cp = llama_context_default_params();
-    cp.n_ctx = 1024; cp.n_batch = 1024;
-    {
-        // Reduced to 4 for memory headroom. 6 threads oversubscribed the
-        // Pixel 10's memory controller during prefill and caused swap
-        // thrashing. 4 keeps a full big.LITTLE cluster busy without the
-        // pressure.
-        cp.n_threads = 4;
-    }
+    cp.n_ctx = 2048; cp.n_batch = 512; cp.n_threads = 4;
     llama_context * ctx = llama_init_from_model(model, cp);
     if (!ctx) { llama_model_free(model); return 0; }
     auto * h = new LlamaHandle();
     h->model = model; h->ctx = ctx;
     h->n_vocab = llama_vocab_n_tokens(llama_model_get_vocab(model));
     h->n_ctx = llama_n_ctx(ctx);
-    LOGI("nativeLoad: OK vocab=%d n_ctx=%d threads=%d",
-         h->n_vocab, h->n_ctx, cp.n_threads);
+    LOGI("nativeLoad: OK vocab=%d n_ctx=%d", h->n_vocab, h->n_ctx);
     return reinterpret_cast<jlong>(h);
 }
 
@@ -189,7 +159,6 @@ Java_com_treg_llmpersonalization_engine_LlamaBridge_nativeComputeGap(
                        tokens.data(), tokens.size(), true, true) < 0) return 999.0f;
 
     clear_kv(h->ctx);
-    int64_t t_gap_start = now_ms();
     llama_batch batch = llama_batch_get_one(tokens.data(), tokens.size());
     if (llama_decode(h->ctx, batch) != 0) return 999.0f;
 
@@ -231,15 +200,10 @@ Java_com_treg_llmpersonalization_engine_LlamaBridge_nativeGenerate(
         return env->NewStringUTF("[error: tokenize buffer]");
 
     clear_kv(h->ctx);
-    int64_t t_prefill_start = now_ms();
     llama_batch batch = llama_batch_get_one(tokens.data(), tokens.size());
     if (llama_decode(h->ctx, batch) != 0)
         return env->NewStringUTF("[error: prefill failed]");
-    int64_t t_prefill_ms = now_ms() - t_prefill_start;
     int32_t n_past = tokens.size();
-    LOGI("generateRaw: prefill %d tokens in %lld ms (%.1f tok/s)",
-         (int) tokens.size(), (long long) t_prefill_ms,
-         t_prefill_ms > 0 ? (tokens.size() * 1000.0 / t_prefill_ms) : 0.0);
 
     auto sparams = llama_sampler_chain_default_params();
     sparams.no_perf = true;
@@ -259,8 +223,6 @@ Java_com_treg_llmpersonalization_engine_LlamaBridge_nativeGenerate(
 
     std::string output;
     llama_token eos = llama_vocab_eos(vocab);
-    int64_t t_gen_start = now_ms();
-    int tokens_generated = 0;
 
     for (int i = 0; i < max_tokens; ++i) {
         llama_token id = llama_sampler_sample(chain, h->ctx, -1);
@@ -280,7 +242,6 @@ Java_com_treg_llmpersonalization_engine_LlamaBridge_nativeGenerate(
         if (llama_decode(h->ctx, next) != 0) { llama_batch_free(next); break; }
         llama_batch_free(next);
         n_past++;
-        tokens_generated++;
     }
 
     llama_sampler_free(chain);
@@ -301,187 +262,4 @@ Java_com_treg_llmpersonalization_engine_LlamaBridge_nativeFreeSampler(
     JNIEnv *, jobject, jlong sampler)
 {
     if (sampler) llama_sampler_free(reinterpret_cast<llama_sampler *>(sampler));
-}
-
-// ============================================================
-// PHASE C ADDITIONS - formatted-prompt pipeline
-// Additive only. Existing apply_chat / nativeGenerate / nativeComputeGap
-// are unchanged, so demo v2.0 behavior is preserved byte-for-byte.
-// ============================================================
-
-static std::string apply_think_fix(std::string formatted) {
-    const std::string open_think     = "<|im_start|>assistant\n<think>\n";
-    const std::string just_assistant = "<|im_start|>assistant\n";
-    if (formatted.size() >= open_think.size() &&
-        formatted.compare(formatted.size() - open_think.size(),
-                          open_think.size(), open_think) == 0) {
-        formatted += "\n</think>\n\n";
-        LOGI("apply_think_fix: closed open think block");
-    } else if (formatted.size() >= just_assistant.size() &&
-               formatted.compare(formatted.size() - just_assistant.size(),
-                                 just_assistant.size(), just_assistant) == 0) {
-        formatted += "<think>\n\n</think>\n\n";
-        LOGI("apply_think_fix: injected empty think block");
-    }
-    return formatted;
-}
-
-extern "C" JNIEXPORT jstring JNICALL
-Java_com_treg_llmpersonalization_engine_LlamaBridge_nativeFormatChat(
-    JNIEnv * env, jobject, jlong handle, jstring system, jstring user)
-{
-    if (!handle) return env->NewStringUTF("");
-    auto * h = reinterpret_cast<LlamaHandle *>(handle);
-    std::string sys = jstring_to_std(env, system);
-    std::string usr = jstring_to_std(env, user);
-
-    const char * tmpl = llama_model_chat_template(h->model, nullptr);
-    if (!tmpl) return env->NewStringUTF((sys + "\n\n" + usr).c_str());
-
-    struct llama_chat_message msgs[2] = {
-        { "system", sys.c_str() },
-        { "user",   usr.c_str() }
-    };
-    int32_t need = llama_chat_apply_template(tmpl, msgs, 2, true, nullptr, 0);
-    if (need <= 0) return env->NewStringUTF((sys + "\n\n" + usr).c_str());
-    std::vector<char> buf(need + 1);
-    llama_chat_apply_template(tmpl, msgs, 2, true, buf.data(), buf.size());
-    std::string formatted = apply_think_fix(std::string(buf.data(), need));
-    return env->NewStringUTF(formatted.c_str());
-}
-
-extern "C" JNIEXPORT jfloat JNICALL
-Java_com_treg_llmpersonalization_engine_LlamaBridge_nativeComputeGapRaw(
-    JNIEnv * env, jobject, jlong handle, jstring formatted_prompt, jint target_token)
-{
-    if (!handle) return 999.0f;
-    auto * h = reinterpret_cast<LlamaHandle *>(handle);
-    if (!h->ctx || !h->model) return 999.0f;
-
-    std::string formatted = jstring_to_std(env, formatted_prompt);
-    const llama_vocab * vocab = llama_model_get_vocab(h->model);
-
-    int32_t n_tok = -llama_tokenize(vocab, formatted.c_str(), formatted.size(),
-                                     nullptr, 0, true, true);
-    if (n_tok <= 0) return 999.0f;
-    std::vector<llama_token> tokens(n_tok);
-    if (llama_tokenize(vocab, formatted.c_str(), formatted.size(),
-                       tokens.data(), tokens.size(), true, true) < 0) return 999.0f;
-
-    clear_kv(h->ctx);
-    int64_t t_gap_start = now_ms();
-    llama_batch batch = llama_batch_get_one(tokens.data(), tokens.size());
-    if (llama_decode(h->ctx, batch) != 0) return 999.0f;
-
-    int32_t n_vocab = llama_vocab_n_tokens(vocab);
-    const float * logits = llama_get_logits_ith(h->ctx, -1);
-    if (!logits) return 999.0f;
-
-    int64_t t_gap_ms = now_ms() - t_gap_start;
-    float top = logits[0];
-    for (int32_t i = 1; i < n_vocab; ++i) if (logits[i] > top) top = logits[i];
-    if (target_token < 0 || target_token >= n_vocab) return 999.0f;
-    float gap = top - logits[target_token];
-    LOGI("computeGapRaw: gap=%.3f in %lld ms", gap, (long long) t_gap_ms);
-    return gap;
-}
-
-extern "C" JNIEXPORT jstring JNICALL
-Java_com_treg_llmpersonalization_engine_LlamaBridge_nativeGenerateRaw(
-    JNIEnv * env, jobject,
-    jlong handle, jstring formatted_prompt,
-    jint target_token, jfloat offset,
-    jint max_tokens, jfloat temperature)
-{
-    if (!handle) return env->NewStringUTF("[error: no handle]");
-    auto * h = reinterpret_cast<LlamaHandle *>(handle);
-    if (!h->ctx || !h->model) return env->NewStringUTF("[error: model not loaded]");
-
-    int64_t t_enter = now_ms();
-    std::string formatted = jstring_to_std(env, formatted_prompt);
-    LOGI("generateRaw: ENTER, prompt %zu chars", formatted.size());
-    const llama_vocab * vocab = llama_model_get_vocab(h->model);
-
-    int64_t t_tok_start = now_ms();
-    int32_t n_tok = -llama_tokenize(vocab, formatted.c_str(), formatted.size(),
-                                     nullptr, 0, true, true);
-    if (n_tok <= 0) {
-        LOGE("generateRaw: tokenize probe failed, n_tok=%d", n_tok);
-        return env->NewStringUTF("[error: tokenize failed]");
-    }
-    LOGI("generateRaw: probe tokenize = %d tokens in %lld ms",
-         n_tok, (long long)(now_ms() - t_tok_start));
-
-    std::vector<llama_token> tokens(n_tok);
-    int64_t t_tok2 = now_ms();
-    if (llama_tokenize(vocab, formatted.c_str(), formatted.size(),
-                       tokens.data(), tokens.size(), true, true) < 0)
-        return env->NewStringUTF("[error: tokenize buffer]");
-    LOGI("generateRaw: full tokenize done in %lld ms",
-         (long long)(now_ms() - t_tok2));
-
-    int64_t t_clear = now_ms();
-    clear_kv(h->ctx);
-    LOGI("generateRaw: clear_kv in %lld ms", (long long)(now_ms() - t_clear));
-
-    int64_t t_prefill_start = now_ms();
-    llama_batch batch = llama_batch_get_one(tokens.data(), tokens.size());
-    LOGI("generateRaw: PREFILL STARTING with %d tokens", (int) tokens.size());
-    if (llama_decode(h->ctx, batch) != 0) {
-        LOGE("generateRaw: llama_decode returned non-zero");
-        return env->NewStringUTF("[error: prefill failed]");
-    }
-    int64_t t_prefill_ms = now_ms() - t_prefill_start;
-    int32_t n_past = tokens.size();
-    LOGI("generateRaw: prefill %d tokens in %lld ms (%.1f tok/s)",
-         (int) tokens.size(), (long long) t_prefill_ms,
-         t_prefill_ms > 0 ? (tokens.size() * 1000.0 / t_prefill_ms) : 0.0);
-
-    auto sparams = llama_sampler_chain_default_params();
-    sparams.no_perf = true;
-    llama_sampler * chain = llama_sampler_chain_init(sparams);
-
-    if (target_token >= 0) {
-        llama_sampler_chain_add(chain,
-            llama_sampler_init_belief((int32_t) target_token, (float) offset));
-        llama_sampler_chain_add(chain, llama_sampler_init_greedy());
-    } else if (temperature <= 0.0f) {
-        llama_sampler_chain_add(chain, llama_sampler_init_greedy());
-    } else {
-        llama_sampler_chain_add(chain, llama_sampler_init_temp(temperature));
-        llama_sampler_chain_add(chain, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
-    }
-
-    std::string output;
-    llama_token eos = llama_vocab_eos(vocab);
-    int64_t t_gen_start = now_ms();
-    int tokens_generated = 0;
-
-    for (int i = 0; i < max_tokens; ++i) {
-        llama_token id = llama_sampler_sample(chain, h->ctx, -1);
-        if (id == eos) break;
-
-        char piece[256];
-        int32_t np = llama_token_to_piece(vocab, id, piece, sizeof(piece), 0, false);
-        if (np > 0) output.append(piece, np);
-
-        struct llama_batch next = llama_batch_init(1, 0, 1);
-        next.token[0]     = id;
-        next.pos[0]       = n_past;
-        next.n_seq_id[0]  = 1;
-        next.seq_id[0][0] = 0;
-        next.logits[0]    = 1;
-        next.n_tokens     = 1;
-        if (llama_decode(h->ctx, next) != 0) { llama_batch_free(next); break; }
-        llama_batch_free(next);
-        n_past++;
-        tokens_generated++;
-    }
-
-    llama_sampler_free(chain);
-    int64_t t_gen_ms = now_ms() - t_gen_start;
-    LOGI("generateRaw: gen %d tokens in %lld ms (%.1f tok/s)",
-         tokens_generated, (long long) t_gen_ms,
-         t_gen_ms > 0 ? (tokens_generated * 1000.0 / t_gen_ms) : 0.0);
-    return env->NewStringUTF(output.c_str());
 }

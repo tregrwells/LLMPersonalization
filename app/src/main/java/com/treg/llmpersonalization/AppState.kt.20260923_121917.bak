@@ -79,14 +79,34 @@ class AppState(app: Application) : AndroidViewModel(app) {
             status = "Preparing model files"
             progress = 0f
             val modelFile = withContext(Dispatchers.IO) {
-                // Ship model: Qwen3.5-0.8B Q8_0. Fits comfortably in the
-                // Pixel 10's available RAM (~2 GB free under v15 runtime).
-                // 4B models (Q4_K_M, Q3_K_S) were tested and cannot fit;
-                // see handoff v4.0 Part 9 for details.
-                status = "Copying bundled 0.8B model"
-                progress = 0.20f
-                copyAsset(ctx, "qwen3.5-0.8b-q8_0.gguf") { p ->
-                    progress = 0.20f + p * 0.35f
+                // Phase D: 4B is real but doesn't fit Pixel 10 RAM.
+                // Use 0.8B (bundled) as the default; 4B only if user explicitly
+                // opts in by placing the file in filesDir AND has >3 GB free.
+                val name4B = "qwen3-4b-instruct-2507-q3_k_s.gguf"
+                val internal4B = File(ctx.filesDir, name4B)
+                val activity = ctx as? android.app.Activity
+                val am = ctx.getSystemService(android.content.Context.ACTIVITY_SERVICE)
+                    as android.app.ActivityManager
+                val memInfo = android.app.ActivityManager.MemoryInfo()
+                am.getMemoryInfo(memInfo)
+                val freeGB = memInfo.availMem / 1_073_741_824.0
+
+                val use4B = internal4B.exists() &&
+                    internal4B.length() > 1_500_000_000L &&
+                    freeGB > 0.5
+
+                if (use4B) {
+                    status = "Using 4B (%.1f GB free)".format(freeGB)
+                    progress = 0.55f
+                    internal4B
+                } else {
+                    if (internal4B.exists()) {
+                        status = "4B present but only %.1f GB free — using 0.8B".format(freeGB)
+                    } else {
+                        status = "Using bundled 0.8B"
+                    }
+                    progress = 0.20f
+                    copyAsset(ctx, "qwen3.5-0.8b-q8_0.gguf") { p -> progress = 0.20f + p * 0.35f }
                 }
             }
             val onnxFile = withContext(Dispatchers.IO) {
