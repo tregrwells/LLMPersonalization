@@ -50,3 +50,5 @@ build_log*.txt
 phase_c_*.ps1
 phase_c_*.txt
 *.log
+*.bak_d0*
+*.bak_p*

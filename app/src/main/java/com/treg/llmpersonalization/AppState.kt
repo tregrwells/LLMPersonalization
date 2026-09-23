@@ -90,11 +90,11 @@ class AppState(app: Application) : AndroidViewModel(app) {
                     progress = 0.55f
                     v15File
                 } else {
-                    status = "Copying bundled 0.8B model"
-                    progress = 0.20f
-                    copyAsset(ctx, "qwen3.5-0.8b-q8_0.gguf") { p ->
-                        progress = 0.20f + p * 0.35f
-                    }
+                    throw IllegalStateException(
+                        "Ship model missing: " + v15File.absolutePath + 
+                        "\nPush with: adb push Qwen3-1.7B-Q4_K_M.gguf /data/local/tmp/ " +
+                        "&& run-as " + ctx.packageName + " cp /data/local/tmp/Qwen3-1.7B-Q4_K_M.gguf /data/data/" + ctx.packageName + "/files/"
+                    )
                 }
             }
             val onnxFile = withContext(Dispatchers.IO) {
