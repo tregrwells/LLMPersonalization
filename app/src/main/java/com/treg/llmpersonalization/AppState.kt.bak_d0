@@ -83,18 +83,10 @@ class AppState(app: Application) : AndroidViewModel(app) {
                 // Pixel 10's available RAM (~2 GB free under v15 runtime).
                 // 4B models (Q4_K_M, Q3_K_S) were tested and cannot fit;
                 // see handoff v4.0 Part 9 for details.
-                val v15Name = "Qwen3-1.7B-Q4_K_M.gguf"
-                val v15File = File(ctx.filesDir, v15Name)
-                if (v15File.exists() && v15File.length() > 1_000_000_000L) {
-                    status = "Using Qwen3-1.7B"
-                    progress = 0.55f
-                    v15File
-                } else {
-                    status = "Copying bundled 0.8B model"
-                    progress = 0.20f
-                    copyAsset(ctx, "qwen3.5-0.8b-q8_0.gguf") { p ->
-                        progress = 0.20f + p * 0.35f
-                    }
+                status = "Copying bundled 0.8B model"
+                progress = 0.20f
+                copyAsset(ctx, "qwen3.5-0.8b-q8_0.gguf") { p ->
+                    progress = 0.20f + p * 0.35f
                 }
             }
             val onnxFile = withContext(Dispatchers.IO) {

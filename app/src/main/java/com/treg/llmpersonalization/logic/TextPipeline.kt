@@ -45,6 +45,8 @@ object TextPipeline {
         val noTags = Regex("<tool_call>.*?</tool_call>", RegexOption.DOT_MATCHES_ALL)
             .replace(cleaned, "")
             .trim()
-        return think to stripTrailingPayload(noTags)
+        val dedecorated = Regex("^(\\*\\*)?(Answer|Result|A|Response):?(\\*\\*)?\\s*", RegexOption.IGNORE_CASE)
+            .replace(noTags, "").trim()
+        return think to stripTrailingPayload(dedecorated)
     }
 }

@@ -41,6 +41,10 @@ object TextPipeline {
      */
     fun postProcess(raw: String): Pair<String?, String> {
         val (think, cleaned) = extractThink(raw)
-        return think to stripTrailingPayload(cleaned)
+        // Phase C fix: strip residual tool_call tags that failed to parse
+        val noTags = Regex("<tool_call>.*?</tool_call>", RegexOption.DOT_MATCHES_ALL)
+            .replace(cleaned, "")
+            .trim()
+        return think to stripTrailingPayload(noTags)
     }
 }
